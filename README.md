@@ -188,7 +188,7 @@ sequenceDiagram
     H->>WF: run.start(initData: user_id, message, channel, bureau_profile, signals)
 
     WF->>WF: decode (NFC, lang detect, STT if audio)
-    WF->>WF: pre-guardrail (injection + unsafe; deny-by-default PII mask)
+    WF->>WF: pre-guardrail (injection + unsafe, deny-by-default PII mask)
     alt blocked
         WF->>WF: branch to guardrailReject
     else passed
