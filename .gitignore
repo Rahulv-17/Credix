@@ -1,0 +1,85 @@
+# Secrets — never commit
+.env
+**/.env
+
+# Keys
+keys/
+*.p8
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+.sfcli/
+
+# Local data dumps (PII)
+*.json
+# ...but config/build manifests are tracked
+!.claude/settings.json
+!langgraph.json
+# TypeScript project manifests
+!**/package.json
+!**/tsconfig.json
+!**/tsconfig.*.json
+# pnpm lockfile
+!**/pnpm-lock.yaml
+# probe input template is safe to track; the real probe.local.json (holds a real mobile = PII) is not
+!**/probe.local.example.json
+
+# Claude Code — personal / machine-local (never commit)
+.claude/settings.local.json
+# Symlinked personal skills — resolve outside the repo, dangling on clone
+.claude/skills/caveman
+.claude/skills/deepeval
+.claude/skills/diagnose
+.claude/skills/grill-me
+.claude/skills/grill-with-docs
+.claude/skills/handoff
+.claude/skills/improve-codebase-architecture
+.claude/skills/prototype
+.claude/skills/setup-matt-pocock-skills
+.claude/skills/tdd
+.claude/skills/to-issues
+.claude/skills/to-prd
+.claude/skills/triage
+.claude/skills/write-a-skill
+.claude/skills/zoom-out
+
+# Python envs / build
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Mastra LibSQL store (created at runtime/tests)
+mastra.db
+mastra.db-shm
+mastra.db-wal
+**/mastra.db
+**/mastra.db-shm
+**/mastra.db-wal
+
+# OS / editor / logs
+.DS_Store
+Thumbs.db
+*.log
+*.swp
+
+# Machine-local agent artifacts — never repo content
+.agents/
+.playwright-mcp/
+scratchpad/
+temp/
+
+# .claude/skills/ holds symlinks into .agents/ (machine-specific installs); only the real
+# project-skill directories below are tracked
+.claude/skills/*
+!.claude/skills/commit/
+!.claude/skills/plan/
+!.claude/skills/verify/
+!.claude/skills/co-review/
+!.claude/skills/morning-ritual/
+!.claude/skills/sequence/
+# Decode node eval sheets (ZT-729): input and scored output both carry eval data
+RightCard_Decode_N1_Eval*.xlsx

@@ -1,0 +1,501 @@
+================================================================================
+ARCHITECTURE PATTERNS — CREDIT CREDIX
+================================================================================
+Format follows the architecture-patterns skill: each pattern is named, defined
+in one or two sentences, mapped to *where* it is applied in this codebase, and
+justified by *why* it was chosen over the obvious alternative.
+
+Patterns are grouped: Orchestration → Data Plane → Memory → Safety → Persona →
+Cost & Performance.
+
+
+================================================================================
+1. ORCHESTRATION PATTERNS
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+1.1  DETERMINISTIC ROUTER  (vs. LLM-as-Router)
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  The edge that selects which specialist handles a turn is a pure function of
+  intent_label and active_specialist, implemented in code (table lookup),
+  not an LLM call.
+
+Applied at
+  src/credit_credix/graph/router.py  (route_skill)
+
+Why this, not the alternative
+  An LLM router would add one LLM call per turn for a decision that is
+  effectively three-way (credit_card | score_improvement | insurance). At
+  conversational scale, that is the single biggest avoidable cost. Code
+  routing is free, fast, and traceable; the small fraction of edge cases
+  it gets wrong can be re-routed by explicit user intent in the next turn.
+
+────────────────────────────────────────────────────────────────────────────────
+1.2  SUPERVISOR WITH STICKY ROUTING
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  A central router supervises specialist selection, and state carries an
+  active_specialist field that biases routing toward continuity across turns.
+
+Applied at
+  CredixState.active_specialist + route_skill
+
+Why this, not the alternative
+  Pure swarm-style handoff loses focus on multi-turn dialogues ("we were
+  talking about my CIBIL, why did you switch to cards?"). Pure orchestrator
+  patterns over-route. Sticky routing keeps the conversation locked to a
+  domain unless evidence is strong enough to flip.
+
+────────────────────────────────────────────────────────────────────────────────
+1.3  COMPILED SUBGRAPHS PER SPECIALIST
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  Each specialist (credit_card, score_improvement, insurance) is a separate
+  compiled LangGraph subgraph with its own internal reason→tool loop.
+
+Applied at
+  src/credit_credix/graph/specialists/*/graph.py
+
+Why this, not the alternative
+  A single monolithic agent prompt forces the model to context-switch every
+  turn between unrelated domains. Compiled subgraphs let each specialist
+  have its own scoped prompt, allowlisted tools, and step budget. Adding a
+  new domain is "add a subgraph + add a router entry," not a prompt rewrite.
+
+────────────────────────────────────────────────────────────────────────────────
+1.4  BOUNDED REASON→TOOL LOOP
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  Inside a specialist, the agent alternates reasoning and tool calls under
+  a hard step budget. The loop terminates when either the budget is hit or
+  the specialist emits a draft_response.
+
+Applied at
+  src/credit_credix/graph/specialists/_base.py
+
+Why this, not the alternative
+  Unbounded ReAct loops are the most common cause of runaway cost and stuck
+  conversations. The budget makes per-turn worst-case cost predictable and
+  forces specialists to be opinionated about when they have enough.
+
+────────────────────────────────────────────────────────────────────────────────
+1.5  SINGLE RENDER NODE INVARIANT
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  Every turn ends at exactly one node (compose) that applies persona,
+  formats the response for the surface (WhatsApp, voice, web), and runs the
+  final guardrail check. Specialists emit drafts, never user-facing strings.
+
+Applied at
+  src/credit_credix/graph/nodes/compose.py
+  + the constraint that specialists return draft_response, not final text
+
+Why this, not the alternative
+  Without this invariant, persona drift creeps in (specialists begin
+  sounding different from each other), numeric-trace checks have to run in
+  N places instead of one, and the surface formatting (WA vs TTS) starts
+  branching inside specialists. One render node = one place to enforce.
+
+────────────────────────────────────────────────────────────────────────────────
+1.6  EXPLICIT FLOWSTATE FOR SLOT FILLING  (vs. LangGraph interrupt())
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  Multi-turn guided flows (e.g. insurance: family size → income → existing
+  cover → ...) carry a FlowState struct inside CredixState that records
+  which slots are filled and which prompt is next. No special pause/resume
+  primitive is used.
+
+Applied at
+  src/credit_credix/graph/state.py:FlowState
+  src/credit_credix/graph/specialists/insurance/flow.py
+
+Why this, not the alternative
+  LangGraph's interrupt() pauses the graph mid-execution, which means a
+  resumed turn does NOT re-enter pre_guardrail and the single render node.
+  That breaks INV-3 and INV-2. FlowState resumes by running the full Turn-1
+  flow each turn and using stored slots to skip already-answered questions.
+
+
+================================================================================
+2. DATA-PLANE PATTERNS
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+2.1  READ-THROUGH CACHE (TIERED: L1 → L2 → L3)
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  Reads consult Redis first, then MongoDB, then Snowflake. A miss promotes
+  the value up: Snowflake → Mongo (audit) → Redis (serve).
+
+Applied at
+  src/credit_credix/raw_data/bureau/resolver.py
+
+Why this, not the alternative
+  Snowflake is slow and expensive per query, but is the source of truth.
+  Mongo is the durable audit (one immutable doc per scrub month). Redis is
+  fast and ephemeral. Read-through gives Snowflake-level correctness with
+  Redis-level latency, and Mongo gives us replay without re-pulling.
+
+────────────────────────────────────────────────────────────────────────────────
+2.2  TOKENIZATION FOR PII SEPARATION
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  The mobile number is hashed to a 32-char opaque token (sha256("91"+m)[:32])
+  used as the cache and audit key. Mobile, PAN, Aadhaar, DOB, address never
+  appear in the agent context.
+
+Applied at
+  src/credit_credix/raw_data/bureau/tokenizer.py
+
+Why this, not the alternative
+  Storing mobile/PAN as keys would leak PII into log lines, traces, and
+  the LangGraph checkpoint. A deterministic hash gives us joinability
+  without identifiability inside the agent plane.
+
+────────────────────────────────────────────────────────────────────────────────
+2.3  IMMUTABLE AUDIT SNAPSHOTS
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  MongoDB stores the full normalized bureau document keyed by
+  {token}:{scrub_month}. Documents are never updated in place; a new month
+  is a new document.
+
+Applied at
+  src/credit_credix/raw_data/bureau/mongo_client.py
+
+Why this, not the alternative
+  Bureau data is a monthly snapshot. Treating it as mutable corrupts the
+  ability to replay a decision Rahul made on the basis of a profile at a
+  given point in time. Append-only by scrub_month makes time-travel free.
+
+────────────────────────────────────────────────────────────────────────────────
+2.4  DECLARATIVE NORMALIZER  (YAML-DRIVEN)
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  The mapping from raw SCRUB fields to the internal Pydantic schema lives
+  in config/scrub_mapping.yaml. The normalizer is a generic interpreter
+  of this YAML; new fields require no code change.
+
+Applied at
+  src/credit_credix/raw_data/bureau/normalizer.py
+  config/scrub_mapping.yaml
+
+Why this, not the alternative
+  Hard-coded field mapping turns a 320-variable schema into a 320-line
+  if/else block that drifts from the actual SCRUB dictionary. YAML +
+  Pydantic validation keeps the dictionary as the source of truth and
+  forces a schema bump when the dictionary changes.
+
+────────────────────────────────────────────────────────────────────────────────
+2.5  PARTIAL READS VIA JSONPATH
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  The agent fetches only the bureau sections relevant to the current
+  intent (e.g. CC_*, PL_*, DPD_*) via named JSONPath selectors. Full-doc
+  pulls are denied by default in production.
+
+Applied at
+  src/credit_credix/raw_data/bureau/partial_reads.py
+
+Why this, not the alternative
+  Pushing the full 320-field document into LLM context wastes tokens and
+  invites the model to reason about irrelevant fields. Named section
+  selectors are the equivalent of column projection in SQL.
+
+────────────────────────────────────────────────────────────────────────────────
+2.6  SOURCE-OF-TRUTH SEPARATION
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  Financial truth lives in Snowflake. Personalization (memory, declared
+  values, goals) lives in Postgres. Neither contains a copy of the other.
+
+Applied at
+  Everywhere. Enforced by directory boundary (raw_data/bureau/ vs
+  raw_data/user_data/ + raw_data/user_memory/).
+
+Why this, not the alternative
+  Duplicating bureau data into the personalization store creates two
+  sources of truth that drift, and burdens the personalization DB with
+  data it doesn't own. Keeping them separate also means PII review only
+  has to inspect one boundary (the Redis projection).
+
+────────────────────────────────────────────────────────────────────────────────
+2.7  ASSEMBLER PATTERN
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  A single component (raw_data/assembler.py) fuses the five raw-data
+  sources (bureau, user_data, user_memory, precomputed, declared) into
+  one PII-stripped JSON document. Specialists read only that document.
+
+Applied at
+  src/credit_credix/raw_data/assembler.py
+
+Why this, not the alternative
+  Without an assembler, every specialist reaches into N sources on its
+  own, and the PII-strip step happens N times with N opportunities to
+  forget. One assembler = one boundary to audit.
+
+
+================================================================================
+3. MEMORY PATTERNS
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+3.1  PROSE SUMMARY + HARD CONSTRAINTS BLOCK
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  Memory has two layers: a lightly sectioned prose summary (the primary
+  layer) and a small structured block of hard constraints (roast consent,
+  sensitive topics, how to address the user). An optional goals_table
+  side-records numeric accountability.
+
+Applied at
+  src/credit_credix/raw_data/user_memory/{prose_summary, hard_constraints,
+  goals_table}.py
+
+Why this, not the alternative
+  A fully structured memory schema fragments naturally noisy human context
+  into rigid slots, creates contradiction-resolution overhead, and forces
+  schema migrations every time the product learns something new. Prose is
+  more robust, easier to regenerate, and works the way a human note-taker
+  works. Hard constraints stay structured because they are non-negotiable
+  rules, not narrative.
+
+────────────────────────────────────────────────────────────────────────────────
+3.2  BACKGROUND WRITER (OFF HOT PATH)
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  Memory writes are enqueued at the end of a turn and processed by a
+  background worker. The user response does not wait on the write.
+
+Applied at
+  src/credit_credix/raw_data/user_memory/background_writer.py
+  src/credit_credix/workers/memory_writer.py
+
+Why this, not the alternative
+  Synchronous summary regeneration adds latency per turn and ties response
+  time to LLM availability for a non-user-visible operation. Async is the
+  natural fit; idempotency makes retries safe.
+
+────────────────────────────────────────────────────────────────────────────────
+3.3  TRANSCRIPT FALLBACK FOR REGENERATION
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  Raw turns are retained so the prose summary can be regenerated from
+  scratch when the summary is corrupted, the prompt is updated, or
+  product changes invalidate prior summaries.
+
+Applied at
+  src/credit_credix/raw_data/user_memory/transcripts.py
+
+Why this, not the alternative
+  Without the raw fallback, a bad memory write is permanent. With it,
+  memory is recoverable: drop the prose, replay the transcripts through
+  the current writer prompt, done.
+
+────────────────────────────────────────────────────────────────────────────────
+3.4  PRE-COMPUTED VALUES
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  Derived metrics that are stable between bureau pulls (utilization,
+  vintage, loan-mix ratios, repayment rates) are computed once on bureau
+  ingest and cached.
+
+Applied at
+  src/credit_credix/raw_data/precomputed/
+
+Why this, not the alternative
+  Recomputing per turn wastes work and risks divergence between
+  specialists. Computing once at ingest gives specialists a stable view.
+
+
+================================================================================
+4. SAFETY / GUARDRAIL PATTERNS
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+4.1  BRACKETED GUARDRAILS (PRE AND POST)
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  Every specialist invocation is wrapped by pre_guardrail (scope, injection,
+  PII detection on input) and post_guardrail (numeric trace, PII rescrub,
+  policy check on output).
+
+Applied at
+  src/credit_credix/graph/nodes/{pre_guardrail, post_guardrail}.py
+  src/credit_credix/guardrails/
+
+Why this, not the alternative
+  One-sided guardrails (input only or output only) leak. Input-only doesn't
+  catch hallucinated PII or fabricated numbers. Output-only doesn't catch
+  injection that has already corrupted the specialist's reasoning. Both
+  sides, every time.
+
+────────────────────────────────────────────────────────────────────────────────
+4.2  NUMERIC TRACEABILITY
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  Every number that reaches the user must have been produced by a tool
+  call, and the response carries an internal trace tying each number to
+  its source. post_guardrail validates the trace before the render node.
+
+Applied at
+  src/credit_credix/guardrails/numeric_traceability.py
+  + tool-call ledger in observability/audit.py
+
+Why this, not the alternative
+  Credit advice with fabricated numbers is the failure mode that destroys
+  user trust fastest. Making traceability a hard precondition of the
+  render node eliminates the class.
+
+────────────────────────────────────────────────────────────────────────────────
+4.3  PII STRIPPING AT THE CACHE BOUNDARY
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  PAN, Aadhaar, mobile, DOB, full address are stripped (or hashed) when
+  the Redis serving projection is built — before the agent ever sees the
+  document.
+
+Applied at
+  raw_data/bureau/resolver.py (projection step)
+  guardrails/pii_scrubber.py (defense in depth)
+
+Why this, not the alternative
+  Stripping at the agent boundary is too late — by then the data has
+  passed through prompts, logs, and traces. Strip at the cache projection.
+
+────────────────────────────────────────────────────────────────────────────────
+4.4  HARD CONSTRAINTS AS A FIRST-CLASS BLOCK
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  Roast consent, sensitive-topic exclusions, and how-to-address-the-user
+  rules live in a separate structured block, not in prose, so they can
+  be enforced as code-level filters and not just as prompt suggestions.
+
+Applied at
+  src/credit_credix/raw_data/user_memory/hard_constraints.py
+
+Why this, not the alternative
+  Encoding non-negotiables as prose makes them depend on the model
+  reading them carefully every turn. Structuring them lets pre_guardrail
+  and synthesizer enforce them deterministically.
+
+
+================================================================================
+5. PERSONA PATTERNS
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+5.1  SYNTHESIZER-ONLY PERSONA
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  Rahul's voice (Hinglish toggles, roast policy, tone) is applied exactly
+  once, at the synthesizer inside the single render node. Tools, memory
+  writes, internal reasoning, and audit logs are voice-neutral.
+
+Applied at
+  src/credit_credix/persona/synthesizer.py
+
+Why this, not the alternative
+  Persona in tool outputs leaks "Rahul-speak" into numbers and rules,
+  which makes them harder to audit and tempts the model to embellish
+  facts to fit the tone. Persona only at the last layer keeps the
+  reasoning surface clean and the voice consistent.
+
+────────────────────────────────────────────────────────────────────────────────
+5.2  ROAST-BEHAVIORS-NEVER-INCOME
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  Rahul roasts patterns (missed EMIs, utilization spikes, hard inquiries)
+  but never income level. Encoded as a content rule in the synthesizer
+  and as a hard-constraint check in post_guardrail.
+
+Applied at
+  persona/style_guide.py + guardrails/content_policy.py
+
+Why this, not the alternative
+  The target audience is often thin-file/low-income; roasting income
+  destroys trust and the product. Behaviors are fair game; status is not.
+
+
+================================================================================
+6. COST & PERFORMANCE PATTERNS
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+6.1  ROUTING-IS-NOT-THE-COST-CENTER
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  Per-turn LLM cost is dominated by the specialist reasoning loop, not
+  by routing. Optimization effort goes to step budgets, partial reads,
+  and prompt scoping inside specialists — not to a smarter router.
+
+Applied at
+  Whole system; explicit in graph/router.py being pure code.
+
+────────────────────────────────────────────────────────────────────────────────
+6.2  PARTIAL-READ TOKEN ECONOMY
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  The agent payload contains only the bureau sections relevant to the
+  current intent. Sections are addressable by name (PL, CC, DPD, ENQ, ...).
+
+Applied at
+  raw_data/bureau/partial_reads.py + raw_data/assembler.py
+
+────────────────────────────────────────────────────────────────────────────────
+6.3  SINGLE CHECKPOINTED STATE
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  All Turn-1 nodes and all specialists share one CredixState object,
+  checkpointed once per turn. Routing between specialists never causes
+  context loss because the state is the context.
+
+Applied at
+  graph/state.py + graph/builders.py
+
+────────────────────────────────────────────────────────────────────────────────
+6.4  IDEMPOTENT BACKGROUND WORK
+────────────────────────────────────────────────────────────────────────────────
+Definition
+  Memory writes and precompute refreshes are designed so that re-running
+  with the same input yields the same output. Retries are safe.
+
+Applied at
+  workers/memory_writer.py + workers/precompute_refresher.py
+
+
+================================================================================
+PATTERN MATRIX (at a glance)
+================================================================================
+
+  Layer            Pattern                              Module
+  ───────          ────────────────────────────         ───────────────────────
+  Orchestration    Deterministic router                 graph/router.py
+  Orchestration    Supervisor + sticky routing          graph/state.py
+  Orchestration    Compiled subgraphs                   graph/specialists/*
+  Orchestration    Bounded reason→tool loop             graph/specialists/_base
+  Orchestration    Single render node                   graph/nodes/compose.py
+  Orchestration    FlowState slot filling               graph/state.py
+  Data plane       Read-through tiered cache            raw_data/bureau/resolver
+  Data plane       Tokenization for PII                 raw_data/bureau/tokenizer
+  Data plane       Immutable audit snapshots            raw_data/bureau/mongo_client
+  Data plane       Declarative normalizer               raw_data/bureau/normalizer
+  Data plane       Partial reads (JSONPath)             raw_data/bureau/partial_reads
+  Data plane       Source-of-truth separation           directory boundary
+  Data plane       Assembler                            raw_data/assembler.py
+  Memory           Prose + hard constraints             raw_data/user_memory/
+  Memory           Background writer                    workers/memory_writer.py
+  Memory           Transcript fallback                  raw_data/user_memory/transcripts
+  Memory           Pre-computed values                  raw_data/precomputed/
+  Safety           Bracketed guardrails                 graph/nodes/{pre,post}_guardrail
+  Safety           Numeric traceability                 guardrails/numeric_traceability
+  Safety           PII strip at cache boundary          raw_data/bureau/resolver
+  Safety           Hard constraints as code             raw_data/user_memory/hard_constraints
+  Persona          Synthesizer-only persona             persona/synthesizer.py
+  Persona          Roast behaviors never income         persona/style_guide.py
+  Cost             Routing is not the cost center       graph/router.py
+  Cost             Partial-read token economy           raw_data/bureau/partial_reads
+  Cost             Single checkpointed state            graph/state.py
+  Cost             Idempotent background work           workers/*

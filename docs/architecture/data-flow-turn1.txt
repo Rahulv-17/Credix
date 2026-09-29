@@ -1,0 +1,2 @@
+# Per-edge contract for the Turn-1 graph.
+# PHASE 2 — placeholder.

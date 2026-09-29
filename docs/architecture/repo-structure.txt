@@ -1,0 +1,315 @@
+credit-credix/
+=================
+Root directory for the Credit Credix product — an AI credit-coaching
+credix with persona "Rahul" for the Indian retail credit market.
+
+Architecture in one line:
+  LangGraph deterministic-routed multi-agent system, sitting over a
+  Postgres + Redis + MongoDB + Snowflake data plane, exposed via FastAPI,
+  driven by Grok at the LLM layer.
+
+Build phases (enforced by which directories are real vs scaffold):
+
+  PHASE 1   raw_data/                ← CURRENT FOCUS
+            (bureau resolver, user data, user memory, precomputed,
+             assembler — everything the agent reads from)
+
+  PHASE 2   graph/  guardrails/  memory/  persona/  llm/  api/  workers/
+            (Turn-1 nodes, specialist subgraphs, guardrail brackets,
+             memory infra, persona synthesizer, FastAPI surface)
+
+  PHASE 3   tools/                   ← TOOL CALL MODULE / CREDIT BRAIN, LAST
+            (deterministic engine, policy & rules KB, decision trees,
+             prediction models, product catalog, intent resolver)
+
+
+────────────────────────────────────────────────────────────────────────
+TOP LEVEL
+────────────────────────────────────────────────────────────────────────
+
+credit-credix/
+├── README.md
+├── pyproject.toml                 ; deps + ruff + mypy + pytest config
+├── uv.lock                        ; or poetry.lock
+├── .env.example                   ; every secret/key, no real values
+├── .gitignore
+├── .pre-commit-config.yaml
+├── Makefile                       ; fmt | lint | test | run-api | run-worker
+├── docker-compose.yml             ; local Postgres + Redis + Mongo
+├── docker-compose.override.yml    ; dev-only overrides
+│
+├── deploy/
+│   ├── docker/
+│   │   ├── api.Dockerfile
+│   │   └── worker.Dockerfile      ; background memory writer container
+│   ├── k8s/
+│   │   ├── api-deployment.yaml
+│   │   ├── worker-deployment.yaml
+│   │   ├── redis.yaml
+│   │   ├── postgres.yaml
+│   │   └── mongo.yaml
+│   └── terraform/                 ; Snowflake conn, secrets, networking
+│
+├── docs/
+│   ├── architecture/
+│   │   ├── architecture-blueprint.txt
+│   │   ├── architecture-patterns.txt
+│   │   ├── atomic-decomposition.txt
+│   │   ├── data-flow-turn1.txt    ; per-edge contract for the Turn-1 graph
+│   │   └── adr/                   ; Architecture Decision Records
+│   │       ├── 0001-langgraph-over-swarm.md
+│   │       ├── 0002-deterministic-router.md
+│   │       ├── 0003-prose-memory-over-structured.md
+│   │       ├── 0004-postgres-redis-over-neo4j-zep.md
+│   │       ├── 0005-flowstate-over-langgraph-interrupt.md
+│   │       └── 0006-single-render-node-invariant.md
+│   ├── personas/
+│   │   └── rahul.md               ; voice, Hinglish toggles, roast policy
+│   ├── prompts/
+│   │   ├── synthesizer.md
+│   │   ├── memory_writer.md
+│   │   └── specialists/
+│   │       ├── credit_card.md
+│   │       ├── score_improvement.md
+│   │       └── insurance.md
+│   ├── runbooks/
+│   │   ├── cache-rebuild.md
+│   │   ├── memory-recovery.md
+│   │   └── snowflake-fallback.md
+│   └── product/
+│       └── scope.md
+│
+├── config/
+│   ├── settings.py                ; Pydantic Settings, env-driven
+│   ├── scrub_mapping.yaml         ; declarative bureau normalizer mapping
+│   ├── policy_rules/              ; PHASE 3 KB sources (placeholders now)
+│   │   ├── foir_caps.yaml
+│   │   ├── dbr_caps.yaml
+│   │   ├── lender_cutoffs.yaml
+│   │   └── rule_ids.yaml
+│   ├── product_catalog/           ; PHASE 3 (placeholders)
+│   │   ├── credit_cards.yaml
+│   │   ├── personal_loans.yaml
+│   │   └── insurance.yaml
+│   └── logging.yaml
+│
+├── migrations/
+│   └── postgres/                  ; Alembic
+│       ├── env.py
+│       └── versions/
+│
+├── scripts/
+│   ├── token_test.py              ; verify sha256("91"+mobile)[:32]
+│   ├── seed_redis.py
+│   ├── backfill_mongo.py          ; rebuild audit index from Snowflake
+│   ├── snowflake_smoke.py
+│   └── memory_summary_eval.py
+│
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   ├── golden/                    ; canonical transcripts, regression fence
+│   ├── fixtures/
+│   │   ├── deepak_profile.json    ; reference SCRUB Feb-2026 sample
+│   │   └── scrub_dictionary.xlsx
+│   └── conftest.py
+│
+└── src/
+    └── credit_credix/
+        │
+        ├── __init__.py
+        │
+        ├── api/                                   PHASE 2
+        │   ├── app.py                             ; FastAPI factory
+        │   ├── routes/
+        │   │   ├── chat.py                        ; /v1/chat — one turn
+        │   │   ├── health.py
+        │   │   └── admin.py
+        │   ├── middleware/
+        │   │   ├── auth.py
+        │   │   ├── request_id.py
+        │   │   └── rate_limit.py
+        │   └── schemas/                           ; pydantic request/response
+        │
+        ├── graph/                                 PHASE 2
+        │   ├── state.py                           ; CredixState, FlowState
+        │   ├── router.py                          ; route_skill — pure code
+        │   ├── builders.py                        ; compile_graph, checkpointer
+        │   ├── nodes/                             ; Turn-1 nodes (1:1 with diagram)
+        │   │   ├── identity_check.py
+        │   │   ├── decode.py                      ; text|voice|doc → lang+intent
+        │   │   ├── understand.py
+        │   │   ├── pre_guardrail.py               ; scope | injection | PII
+        │   │   ├── user_story.py                  ; session+profile+memory phase
+        │   │   ├── skill_resolver.py              ; Skill.Resolve(intent, ctx)
+        │   │   ├── post_guardrail.py              ; numeric-trace, PII re-scrub
+        │   │   ├── memory_writeback.py            ; async; OFF hot path
+        │   │   └── compose.py                     ; WA | TTS render
+        │   └── specialists/                       ; bounded ReAct subgraphs
+        │       ├── _base.py                       ; reason→tool loop scaffold
+        │       ├── credit_card/
+        │       │   ├── graph.py
+        │       │   └── prompts.py
+        │       ├── score_improvement/
+        │       │   ├── graph.py
+        │       │   └── prompts.py
+        │       └── insurance/
+        │           ├── graph.py
+        │           ├── flow.py                    ; explicit slot-filling FlowState
+        │           └── prompts.py
+        │
+        ├── raw_data/                              PHASE 1 ← CURRENT FOCUS
+        │   ├── __init__.py
+        │   │
+        │   ├── bureau/                            ; Bureau Data box
+        │   │   ├── resolver.py                    ; L1 Redis → L2 Mongo → L3 Snowflake
+        │   │   ├── tokenizer.py                   ; sha256("91"+mobile)[:32]
+        │   │   ├── snowflake_client.py
+        │   │   ├── mongo_client.py
+        │   │   ├── redis_client.py
+        │   │   ├── normalizer.py                  ; YAML-driven via scrub_mapping.yaml
+        │   │   ├── partial_reads.py               ; JSONPath section selectors
+        │   │   ├── schemas/
+        │   │   │   ├── scrub.py                   ; 320-field Pydantic model
+        │   │   │   ├── sections.py                ; PL / CC / TW / HL / DPD / ENQ slices
+        │   │   │   └── identity.py
+        │   │   └── errors.py
+        │   │
+        │   ├── user_data/                         ; User Data box
+        │   │   ├── declared_values.py             ; income, employer, goals (user-stated)
+        │   │   ├── store.py                       ; Postgres JSONB writes
+        │   │   └── schemas.py
+        │   │
+        │   ├── user_memory/                       ; episodic + semantic + behavioral
+        │   │   ├── prose_summary.py               ; primary memory layer
+        │   │   ├── hard_constraints.py            ; roast consent, sensitive topics, address-by
+        │   │   ├── goals_table.py                 ; optional numeric accountability
+        │   │   ├── transcripts.py                 ; raw turns, fallback for regeneration
+        │   │   ├── background_writer.py           ; async writer; OFF hot path
+        │   │   └── schemas.py
+        │   │
+        │   ├── precomputed/                       ; Pre-Computed Values box
+        │   │   ├── eligibility.py                 ; cached FOIR/DBR projections
+        │   │   ├── derived_metrics.py             ; utilization, vintage, mix ratios
+        │   │   └── refresh.py
+        │   │
+        │   └── assembler.py                       ; one PII-stripped JSON for the agent
+        │
+        ├── memory/                                PHASE 2 (infra layer)
+        │   ├── postgres_store.py                  ; JSONB sections, transactions
+        │   ├── redis_cache.py                     ; cc:profile:{token} serving cache
+        │   ├── checkpoint.py                      ; LangGraph checkpointer adapter
+        │   └── assembler.py                       ; thin wrapper over raw_data/assembler
+        │
+        ├── guardrails/                            PHASE 2
+        │   ├── pii_scrubber.py                    ; PAN | Aadhaar | mobile | DOB | address
+        │   ├── injection_filter.py
+        │   ├── scope_filter.py
+        │   ├── numeric_traceability.py            ; every number must tie to a tool output
+        │   └── content_policy.py
+        │
+        ├── persona/                               PHASE 2
+        │   ├── rahul.py                           ; voice config
+        │   ├── synthesizer.py                     ; applies voice at single render node
+        │   └── style_guide.py                     ; Hinglish toggles, roast policy
+        │
+        ├── llm/                                   PHASE 2
+        │   ├── grok_client.py                     ; primary provider
+        │   ├── fallback.py
+        │   └── prompts/
+        │
+        ├── tools/                                 PHASE 3 ← CREDIT BRAIN, LAST
+        │   ├── __init__.py
+        │   ├── registry.py                        ; tool ↔ spec ↔ specialist mapping
+        │   ├── deterministic_engine/              ; Code | Calculation
+        │   │   ├── emi.py
+        │   │   ├── interest.py
+        │   │   ├── foir.py
+        │   │   ├── dbr.py
+        │   │   └── refinance.py
+        │   ├── policy_rules_kb/                   ; Curated | Deterministic
+        │   │   ├── loader.py                      ; reads config/policy_rules/*.yaml
+        │   │   ├── caps.py                        ; FOIR/DBR/lender cutoffs
+        │   │   └── trace.py                       ; every rule emits a stable ID
+        │   ├── decision_trees/                    ; Branching | Traceable
+        │   │   ├── card_eligibility.py
+        │   │   └── score_improvement.py
+        │   ├── prediction_models/                 ; Probabilistic | Policy-gated
+        │   │   ├── approval_likelihood.py
+        │   │   └── policy_gate.py                 ; never exposed unguarded
+        │   ├── product_catalog/                   ; Products → Recommendation
+        │   │   ├── search.py
+        │   │   └── ranker.py
+        │   └── intent_resolver/                   ; Intent Identify
+        │       └── classifier.py
+        │
+        ├── observability/                         PHASE 2
+        │   ├── logging.py                         ; structured JSON
+        │   ├── tracing.py                         ; OTEL spans per node + tool
+        │   ├── metrics.py                         ; node latency, tool cost, cache hit
+        │   └── audit.py                           ; tool-call ledger
+        │
+        ├── workers/                               PHASE 2
+        │   ├── memory_writer.py                   ; consumes write queue
+        │   └── precompute_refresher.py
+        │
+        └── common/
+            ├── errors.py
+            ├── types.py
+            ├── ids.py                             ; trace_id, turn_id, token helpers
+            └── utils.py
+
+
+────────────────────────────────────────────────────────────────────────
+WHAT GOES WHERE (decision rules, so the boundary stays clean)
+────────────────────────────────────────────────────────────────────────
+
+raw_data/   = WHAT THE AGENT READS FROM
+            Content layer. Owns: bureau resolution, declared user facts,
+            memory content (prose, constraints, goals, transcripts),
+            and precomputed derived values. Produces the single
+            PII-stripped JSON payload the agent sees per turn.
+
+memory/     = HOW THAT CONTENT IS STORED
+            Infra layer. Postgres JSONB + Redis cache + Mongo audit +
+            LangGraph checkpointer. raw_data/user_memory/ uses memory/
+            as its persistence backend; memory/ knows nothing about
+            credit semantics.
+
+graph/      = ORCHESTRATION
+            CredixState, deterministic router, Turn-1 nodes,
+            specialist subgraphs. Reads from raw_data/, writes via
+            memory_writeback (off hot path).
+
+guardrails/ = BRACKETS
+            Pre and post. Pre runs before any specialist; post runs
+            before compose. Numeric traceability lives here.
+
+persona/    = VOICE
+            Applied ONLY at the synthesizer layer inside the single
+            render node. Never in tool outputs, never in memory writes.
+
+tools/      = CREDIT BRAIN
+            Deterministic engines, policy KB, decision trees, prediction
+            models, product catalog, intent resolver. Built LAST so the
+            data and control planes are stable before the reasoning
+            surface is wired in.
+
+
+────────────────────────────────────────────────────────────────────────
+FIRST-WEEK CHECKLIST FOR PHASE 1 (raw_data/)
+────────────────────────────────────────────────────────────────────────
+
+[ ] tokenizer.py                  + golden test against 6363341855
+[ ] snowflake_client.py           + smoke test pulling Deepak's row
+[ ] schemas/scrub.py              ; full 320-field Pydantic model
+[ ] normalizer.py                 + scrub_mapping.yaml validated
+[ ] mongo_client.py               ; write {token}:{scrub_month} audit doc
+[ ] redis_client.py               ; cc:profile:{token} read/write
+[ ] resolver.py                   ; L1→L2→L3 with read-through
+[ ] partial_reads.py              ; JSONPath section pulls
+[ ] user_data/store.py            ; Postgres JSONB declared values
+[ ] user_memory/prose_summary.py  ; section template + getter/setter
+[ ] user_memory/hard_constraints.py
+[ ] precomputed/derived_metrics.py
+[ ] assembler.py                  ; PII-stripped JSON, end-to-end test

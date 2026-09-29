@@ -1,0 +1,231 @@
+CREDIT CREDIX — IMPROVEMENT LEDGER
+Opened 2026-08-03. Branch feat/langfuse-tracing-request-context, PR #19.
+
+How to read this: ranked by (harm if ignored) x (cost to fix), most worth doing first. Every item says
+what is actually known versus assumed, because two of these were argued from a hypothesis and only one
+of the two survived measurement. If you fix one, delete it from here and record it in progress.md.
+
+
+================================================================================
+1. MASKED FINANCIAL DATA STILL SITS IN LANGFUSE PROMPT TEXT          [OPEN, decision needed]
+================================================================================
+WHAT
+  masterStep embeds the masked bureau profile as a JSON STRING inside the master prompt
+  (workflows/credix-workflow.ts, the `User profile (masked):` line). Key-based omission cannot
+  reach inside a string, so loan structure and amounts reach Langfuse on every turn.
+
+MEASURED (2026-08-03, real bureau backed turn, trace read back through the API)
+  - Structured payloads: GONE. bureau_profile / masked_profile / signals are dropped recursively from
+    span input and output (commit 1c806be). 18 `[omitted]` markers in the span tree.
+  - Identity: emails 0, AGE_EXACT / income keys 0, mobile only as the deliberate trace user id.
+  - Residual: ~376 financial key-name hits, all of them inside prompt text and memory processor spans.
+
+WHY IT IS A DECISION, NOT A BUG
+  The prompt is the one payload LLM tracing exists to show. Removing it means either redacting inside
+  prompt strings (guts the trace, you lose the ability to debug what the model saw) or not giving the
+  model the profile (impossible, it is the product). Options, in ascending cost:
+    a) accept it, and rely on the destination being compliance tier
+    b) redact only numeric amounts in prompt strings, keep structure legible
+    c) hideInput on the generation spans only, keep step spans readable
+  Cost of (a) is zero and it is the current state. Pick deliberately rather than by drift.
+
+
+================================================================================
+2. LATENCY: 20 TO 44 SECONDS PER TURN                                [OPEN, needs measurement first]
+================================================================================
+MEASURED
+  2026-08-03, real turns: 44.4s / 16.3s / 24.4s (three turn conversation), then 23.7s and 20.2s on
+  single turn runs. Turn 3 made FOUR model calls. Token counts per generation in that turn:
+    worker grok-4.20-0309-non-reasoning  11645 in / 371 out
+    worker grok-4.20-0309-non-reasoning  31282 in / 255 out
+    master grok-4.5                      33847 in / 788 out
+    worker grok-4.20-0309-non-reasoning  11844 in / 291 out
+
+NOT ESTABLISHED — correct an earlier claim
+  An earlier note in this session asserted the big prompts were the raw bureau profile being stuffed
+  into prompts, and that fixing the PII item would fix latency too. That was a hypothesis and it did
+  NOT survive checking: the exported generation input was ~12.5k chars against 33.8k reported tokens,
+  so the export is partial and the composition cannot be attributed from it. The two items are
+  independent. Do not fix them as one change.
+
+NEXT STEP (cheap, do this before optimising anything)
+  Log prompt char counts per contributor at build time in masterStep: masked profile, signal summary,
+  statement hint, conversation history, OM observations, tool results. One log line per turn tells you
+  which of the six is 30k tokens. Everything else here is guessing.
+
+MEASURED 2026-08-04: only ~10% of a master turn's prompt is cacheable (system plus tool schemas,
+  ~3-4k tokens of ~34k). The remaining ~30k is profile, history, OM and tool results, all per-turn. So
+  prompt-structure tricks (tool subsetting, situational blocks) are rounding error here; attribution is
+  the whole game. See tasks/findings.md 2026-08-04 for the cache measurements.
+
+SUSPECTS, in order of prior probability
+  - card catalog tool results (getCardFullProfile returns full card documents, called twice in turn 3)
+  - conversation history plus OM observations growing turn over turn
+  - the masked profile JSON
+  Two older todo.md entries (concurrent x.ai POST, residual ~3s) predate the Grok switch and are live
+  again as contributors.
+
+
+================================================================================
+3. NO COST VISIBILITY: EVERY GENERATION SHOWS calculatedTotalCost 0  [OPEN, ~10 minutes]
+================================================================================
+WHAT
+  The Langfuse project has no model definitions matching grok-4.5 or grok-4.20-0309-non-reasoning, so
+  every generation costs 0 and the per turn cost question is unanswerable.
+
+FIX
+  POST /api/public/models once per id, prices from GET https://api.x.ai/v1/language-models:
+    grok-4.5                      2.00 in / 6.00 out per 1M tokens
+    grok-4.20-0309-non-reasoning  1.25 in / 2.50 out per 1M tokens
+  Long context pricing doubles past a 200k prompt threshold; ignore that until any turn approaches it.
+
+WHY IT BLOCKS OTHER WORK
+  Item 4 and item 6 are both cost arguments. Neither can be settled while every trace reads zero.
+  NOT DONE HERE because it mutates the shared Langfuse project; needs an explicit go ahead.
+
+
+================================================================================
+4. RAW MOBILE AS THE LANGFUSE USER ID                                [DEFERRED by product, 2026-08-03]
+================================================================================
+WHAT
+  server.ts passes the raw 10 digit mobile as tracingOptions.metadata.userId, and
+  identifierScrubProcessor exempts that one field from the value scrub so it survives export.
+
+STATUS
+  Deliberate product decision. HMAC hashing and omitting the field were both offered and declined.
+  The two PR #19 threads were CLOSED on 2026-08-03 as accepted-decision, not as fixed, each with a
+  comment that says so in the first line so a resolved thread cannot be misread as "the PII left":
+    - src/mastra/server.ts:192
+    - src/mastra/lib/langfuse-observability.ts:58
+  The code is unchanged. This ledger item is now the only tracker; the PR will not remind anyone.
+  A second reviewer (Copilot, third pass) flagged it again citing AGENTS.md:15, and suppressed the
+  comment as a duplicate. So there are now two independent bots against one product decision.
+
+WHAT BOUNDS IT TODAY
+  - buildObservability() refuses to export unless LANGFUSE_BASE_URL is set, so the SDK can never fall
+    back to the public cloud host. Current destination is the HIPAA tier instance.
+  - Verified: the mobile appears ONLY as the user.id attribute (trace level plus its per observation
+    copy). Zero occurrences in prompts, messages, tool I/O or payloads.
+  - The prompt no longer carries it either, as of fc8b370.
+
+WHEN PICKED UP
+  The two threads move together. Hash at the call site in server.ts, then delete the scrub exemption
+  in the same change. Removing the exemption alone just redacts every user into one bucket and kills
+  the per user view the raw value was chosen for.
+
+HONEST QUESTION WORTH ASKING FIRST
+  Is anyone actually using the Langfuse per user view? If not, the compliance cost is being paid for a
+  feature nobody has opened, and omitting the field is free.
+
+
+================================================================================
+5. BUREAU DATA REACHED THROUGH TOOLS IS NOT COVERED BY KEY OMISSION  [OPEN, small]
+================================================================================
+WHAT
+  getBureauDetail returns a section body directly, e.g. { loan_details: [...] } or a bare array wrapped
+  under the section key. There is no bureau_profile wrapper, so OMITTED_KEYS does not match and the
+  section lands in that tool span's output.
+
+FIX OPTIONS
+  a) add the eight VALID_SECTIONS names to OMITTED_KEYS (blunt, loses tool debuggability)
+  b) omit by tool span name instead of payload key (surgical, needs the span name to be stable)
+  Do this with item 1, same decision about how much of the trace you are willing to blind.
+
+
+================================================================================
+6. MODEL CHOICE RESTS ON A SYNTHETIC BENCHMARK                       [OPEN, needs item 3 first]
+================================================================================
+WHAT
+  master = grok-4.5, worker = grok-4.20-0309-non-reasoning, chosen from a ping-tool latency probe
+  (2.8s vs 1.4s round trip) and list pricing. No comparison of REPLY QUALITY on real turns has been
+  run between grok-4.5 and the cheaper grok-4.20-0309-reasoning for the master role.
+
+WHY IT MATTERS
+  Master is 2.00/6.00 against 1.25/2.50 per 1M, on ~34k prompt tokens per turn. That is the single
+  biggest per turn cost line and it is defended by a benchmark that answered "call the ping tool".
+
+NOTE
+  grok-4.20-0309-reasoning emitted a stray \confidence{80} token in the probe reply, which is a real
+  risk for a user facing turn. That is an argument for keeping 4.5 on master, but it should be an
+  argument made from a quality comparison, not from one probe.
+
+
+================================================================================
+7. COMMENT DENSITY IN THE OBSERVABILITY AND PROVIDER FILES           [OPEN, cosmetic]
+================================================================================
+MEASURED
+  This session added 217 lines to src/mastra, 79 of them comments (36%).
+
+WHERE
+  - lib/provider.ts: 11 comment lines above 6 lines of code; the latency numbers and model rationale
+    are already in progress.md
+  - server.ts tracingOptions block: 7 comment lines on an 8 line literal
+  - the "raw mobile by explicit decision" story is told in 4 places across 3 files plus a test docstring
+  - __tests__/observability-gate.test.ts: 12 lines of env save/restore plus two cases that only prove
+    && short circuits
+
+NET
+  About 35 lines removable, ~30 of them comments. Do it while touching those files for another reason.
+  Never as its own commit. The gate test cases are a judgment call: it is a PII boundary, so redundant
+  coverage there is cheap insurance rather than bloat.
+
+
+================================================================================
+8. PR #19 HAS OUTGROWN ITS TITLE                                     [ACCEPTED, no action]
+================================================================================
+  Titled "ZT-729 + ZT-730" and now also contains a provider switch to Grok, per turn Langfuse tracing,
+  session grouping, tool schema changes and the PII fixes above, across 28 files. A reviewer cannot say
+  no to one part.
+  Decision: land it. Splitting now costs more than the review friction it saves. Be disciplined on the
+  next branch instead.
+
+
+================================================================================
+9. SMALLER THINGS, CARRIED FROM todo.md
+================================================================================
+  - getBureauProfile (tools/bureau.ts:29) still takes a required user_id with no context read. It is
+    unreferenced by every agent. Delete it with its tests, or convert it. Leaving it makes dead code
+    look maintained.
+  - pyproject.toml:17-18 still pins langgraph and langgraph-cli though the wiring is gone. Removing
+    them means regenerating uv.lock.
+  - The OM Observer/Reflector and the compose/TTS call are not proven to join the per turn Langfuse
+    trace. They run outside masterStep, which is where tracingContext is forwarded.
+  - 18 Dependabot vulnerabilities on the default branch (11 high, 6 moderate, 1 low), surfaced on every
+    push. Nobody has triaged them.
+
+
+================================================================================
+10. PONYTAIL AUDIT OF PR #20 — remaining findings (2026-08-05)
+================================================================================
+  Ranked over-engineering findings from a ponytail-audit of the 18 changed files. Items 1, 3, 4 and 6
+  SHIPPED in e17bb3f as part of the Copilot review round (session-state to ttlCache, first_year_note
+  derivation, the "Do NOT" duplication, and the three money formatters). The rest are open:
+
+  - agents.test.ts:118 — MUST_CONTAIN x 3 agents generates 18 it() blocks to prove string concat works,
+    when all three read the same RAHUL_PERSONA constant. Assert the 6 CRITICAL lines against
+    RAHUL_PERSONA once, plus toContain(RAHUL_PERSONA) in the existing per-agent loop. 18 tests to 2,
+    same coverage.
+  - [DONE 2026-08-05, commit 5c85cbd] lib/signal-summary.ts — buildSignalSummary now calls plainSignals
+    once and reads the plain fields. Copilot raised the same point as a suppressed comment.
+  - scripts/battery.ts:126 — the spelled-number check's own `why` says "NOTE noisy" and it appears in no
+    results table in the PR body. Our stated policy is that a rule which moves no number gets deleted;
+    this is a check that moves an uninterpretable one. Delete, or narrow the regex to number-adjacent
+    context (one|two...\s+(thousand|lakh|crore|rupees|percent)).
+  - tools/card-catalog.ts:368 — applicable_days ships the raw ISO array next to applicable_days_label,
+    and the agent prompt only ever names the label. One field.
+  - tools/card-catalog.ts:648 — no_data_note has .default(null) AND is set to null explicitly at all
+    four return sites. Pick one.
+  - [DONE 2026-08-05, commit 5c85cbd] scripts/battery.ts — CheckCtx.message removed.
+  - scripts/battery.ts:153 — `watch` is static per case and already lives in battery-cases.ts; writing
+    it on every row bloats the jsonl.
+  - scripts/battery.ts:134 — String(process.hrtime.bigint()).slice(0, 10) as a run stamp is clever where
+    Date.now().toString(36) is boring.
+  - lib/language.ts:18,59 — ta/te detection and notes ship with no evidence of Tamil or Telugu users and
+    the `en` fallback already serves them. Lowest rank: 6 lines, and removing them makes the product
+    worse for the first such user, so this one may well be worth keeping. Listed for honesty.
+
+  Net if all taken: about 60 lines and 16 redundant tests. No dependencies involved.
+
+  UPDATE 2026-08-05: 2 of the 9 shipped in 5c85cbd (both were independently raised as suppressed Copilot
+  comments, which is a fair signal that the audit was reading the same smells a reviewer does). 7 remain.
+  Also fixed there, and NOT from this audit: the Hinglish regex was being recompiled on every request.

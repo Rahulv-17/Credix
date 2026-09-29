@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="92" assertions="133" failures="0" skipped="0" time="0.968987054">
+  <testsuite name="__tests__/steps.test.ts" file="__tests__/steps.test.ts" tests="31" assertions="50" failures="0" skipped="0" time="0" hostname="beast">
+    <testsuite name="decodeStep" file="__tests__/steps.test.ts" line="50" tests="7" assertions="9" failures="0" skipped="0" time="0.001" hostname="beast">
+      <testcase name="detects Hindi from Devanagari text" classname="decodeStep" time="0.001228" file="__tests__/steps.test.ts" line="51" assertions="2" />
+      <testcase name="detects Gujarati" classname="decodeStep" time="0.000113" file="__tests__/steps.test.ts" line="57" assertions="1" />
+      <testcase name="returns en for ASCII text" classname="decodeStep" time="0.000208" file="__tests__/steps.test.ts" line="62" assertions="1" />
+      <testcase name="returns dominant script for mixed input" classname="decodeStep" time="0.000126" file="__tests__/steps.test.ts" line="67" assertions="1" />
+      <testcase name="NFC normalises the text" classname="decodeStep" time="0.000125" file="__tests__/steps.test.ts" line="72" assertions="1" />
+      <testcase name="transcribes audio_url via ElevenLabs STT" classname="decodeStep" time="0.000226" file="__tests__/steps.test.ts" line="80" assertions="2" />
+      <testcase name="throws when audio_url used without ELEVENLABS_API_KEY" classname="decodeStep" time="0.000202" file="__tests__/steps.test.ts" line="87" assertions="1" />
+    </testsuite>
+    <testsuite name="preGuardrailStep" file="__tests__/steps.test.ts" line="97" tests="9" assertions="20" failures="0" skipped="0" time="0" hostname="beast">
+      <testcase name="blocks injection: &quot;ignore previous instructions&quot;" classname="preGuardrailStep" time="0.000567" file="__tests__/steps.test.ts" line="104" assertions="2" />
+      <testcase name="blocks injection: &quot;act as DAN&quot;" classname="preGuardrailStep" time="0.000159" file="__tests__/steps.test.ts" line="110" assertions="2" />
+      <testcase name="blocks out-of-scope: IPL score" classname="preGuardrailStep" time="0.000164" file="__tests__/steps.test.ts" line="116" assertions="2" />
+      <testcase name="blocks out-of-scope: recipe" classname="preGuardrailStep" time="0.000094" file="__tests__/steps.test.ts" line="122" assertions="1" />
+      <testcase name="passes a valid credit query" classname="preGuardrailStep" time="0.00045" file="__tests__/steps.test.ts" line="127" assertions="1" />
+      <testcase name="passes decoded_text through on pass" classname="preGuardrailStep" time="0.000113" file="__tests__/steps.test.ts" line="132" assertions="1" />
+      <testcase name="returns masked_profile with partially masked mobile" classname="preGuardrailStep" time="0.000186" file="__tests__/steps.test.ts" line="137" assertions="5" />
+      <testcase name="masks PAN in profile (first 3 and last 3 shown)" classname="preGuardrailStep" time="0.000119" file="__tests__/steps.test.ts" line="147" assertions="3" />
+      <testcase name="masks Aadhaar (only last 4 digits shown)" classname="preGuardrailStep" time="0.000117" file="__tests__/steps.test.ts" line="155" assertions="3" />
+    </testsuite>
+    <testsuite name="postGuardrailStep" file="__tests__/steps.test.ts" line="166" tests="7" assertions="12" failures="0" skipped="0" time="0" hostname="beast">
+      <testcase name="redacts PAN" classname="postGuardrailStep" time="0.000216" file="__tests__/steps.test.ts" line="167" assertions="3" />
+      <testcase name="redacts mobile number" classname="postGuardrailStep" time="0.000077" file="__tests__/steps.test.ts" line="174" assertions="2" />
+      <testcase name="redacts Aadhaar" classname="postGuardrailStep" time="0.00006" file="__tests__/steps.test.ts" line="180" assertions="1" />
+      <testcase name="does NOT redact CIBIL score 750" classname="postGuardrailStep" time="0.000056" file="__tests__/steps.test.ts" line="185" assertions="1" />
+      <testcase name="does NOT redact score 850" classname="postGuardrailStep" time="0.000057" file="__tests__/steps.test.ts" line="190" assertions="1" />
+      <testcase name="passes clean text unchanged" classname="postGuardrailStep" time="0.000055" file="__tests__/steps.test.ts" line="195" assertions="1" />
+      <testcase name="handles multiple PII types in one string" classname="postGuardrailStep" time="0.000094" file="__tests__/steps.test.ts" line="200" assertions="3" />
+    </testsuite>
+    <testsuite name="composeStep" file="__tests__/steps.test.ts" line="212" tests="8" assertions="9" failures="0" skipped="0" time="0.001" hostname="beast">
+      <testcase name="whatsapp: strips bold markdown" classname="composeStep" time="0.000521" file="__tests__/steps.test.ts" line="219" assertions="2" />
+      <testcase name="whatsapp: strips italic markdown" classname="composeStep" time="0.000119" file="__tests__/steps.test.ts" line="225" assertions="1" />
+      <testcase name="whatsapp: truncates long paragraphs to 3 lines" classname="composeStep" time="0.000176" file="__tests__/steps.test.ts" line="230" assertions="1" />
+      <testcase name="web: passes through unchanged" classname="composeStep" time="0.000065" file="__tests__/steps.test.ts" line="236" assertions="1" />
+      <testcase name="tts: returns base64 audio data URI" classname="composeStep" time="0.001072" file="__tests__/steps.test.ts" line="241" assertions="1" />
+      <testcase name="tts: strips markdown before sending to ElevenLabs" classname="composeStep" time="0.000142" file="__tests__/steps.test.ts" line="246" assertions="1" />
+      <testcase name="uses general as default active_skill" classname="composeStep" time="0.000076" file="__tests__/steps.test.ts" line="252" assertions="1" />
+      <testcase name="preserves provided active_skill" classname="composeStep" time="0.000064" file="__tests__/steps.test.ts" line="257" assertions="1" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="__tests__/patterns.test.ts" file="__tests__/patterns.test.ts" tests="53" assertions="74" failures="0" skipped="0" time="0" hostname="beast">
+    <testsuite name="INJECTION_PATTERNS" file="__tests__/patterns.test.ts" line="19" tests="11" assertions="11" failures="0" skipped="0" time="0" hostname="beast">
+      <testcase name="flags &quot;ignore previous instructions&quot;" classname="INJECTION_PATTERNS" time="0.00007" file="__tests__/patterns.test.ts" line="20" assertions="1" />
+      <testcase name="flags &quot;ignore prior instructions&quot;" classname="INJECTION_PATTERNS" time="0.000022" file="__tests__/patterns.test.ts" line="24" assertions="1" />
+      <testcase name="flags DAN jailbreak token" classname="INJECTION_PATTERNS" time="0.00002" file="__tests__/patterns.test.ts" line="28" assertions="1" />
+      <testcase name="flags &quot;act as if you are&quot;" classname="INJECTION_PATTERNS" time="0.000015" file="__tests__/patterns.test.ts" line="32" assertions="1" />
+      <testcase name="flags &quot;pretend you are&quot;" classname="INJECTION_PATTERNS" time="0.000015" file="__tests__/patterns.test.ts" line="36" assertions="1" />
+      <testcase name="flags &quot;system prompt&quot;" classname="INJECTION_PATTERNS" time="0.000014" file="__tests__/patterns.test.ts" line="40" assertions="1" />
+      <testcase name="flags &quot;new instructions&quot;" classname="INJECTION_PATTERNS" time="0.000017" file="__tests__/patterns.test.ts" line="44" assertions="1" />
+      <testcase name="flags &quot;disregard all&quot;" classname="INJECTION_PATTERNS" time="0.000077" file="__tests__/patterns.test.ts" line="48" assertions="1" />
+      <testcase name="flags &quot;jailbreak&quot;" classname="INJECTION_PATTERNS" time="0.00002" file="__tests__/patterns.test.ts" line="52" assertions="1" />
+      <testcase name="does NOT flag a normal credit question" classname="INJECTION_PATTERNS" time="0.000019" file="__tests__/patterns.test.ts" line="56" assertions="1" />
+      <testcase name="does NOT flag a loan question" classname="INJECTION_PATTERNS" time="0.000031" file="__tests__/patterns.test.ts" line="60" assertions="1" />
+    </testsuite>
+    <testsuite name="SCOPE_PATTERNS" file="__tests__/patterns.test.ts" line="65" tests="10" assertions="10" failures="0" skipped="0" time="0" hostname="beast">
+      <testcase name="flags recipe query" classname="SCOPE_PATTERNS" time="0.000021" file="__tests__/patterns.test.ts" line="66" assertions="1" />
+      <testcase name="flags cooking query" classname="SCOPE_PATTERNS" time="0.000014" file="__tests__/patterns.test.ts" line="70" assertions="1" />
+      <testcase name="flags IPL score query" classname="SCOPE_PATTERNS" time="0.000017" file="__tests__/patterns.test.ts" line="74" assertions="1" />
+      <testcase name="flags cricket score query" classname="SCOPE_PATTERNS" time="0.000055" file="__tests__/patterns.test.ts" line="78" assertions="1" />
+      <testcase name="flags weather query" classname="SCOPE_PATTERNS" time="0.000022" file="__tests__/patterns.test.ts" line="82" assertions="1" />
+      <testcase name="flags horoscope query" classname="SCOPE_PATTERNS" time="0.000027" file="__tests__/patterns.test.ts" line="86" assertions="1" />
+      <testcase name="flags Nifty/stock query" classname="SCOPE_PATTERNS" time="0.000019" file="__tests__/patterns.test.ts" line="90" assertions="1" />
+      <testcase name="flags sensex query" classname="SCOPE_PATTERNS" time="0.000021" file="__tests__/patterns.test.ts" line="94" assertions="1" />
+      <testcase name="does NOT flag a credit card question" classname="SCOPE_PATTERNS" time="0.00002" file="__tests__/patterns.test.ts" line="98" assertions="1" />
+      <testcase name="does NOT flag a bureau question" classname="SCOPE_PATTERNS" time="0.000016" file="__tests__/patterns.test.ts" line="102" assertions="1" />
+    </testsuite>
+    <testsuite name="PAN_PATTERN" file="__tests__/patterns.test.ts" line="107" tests="5" assertions="5" failures="0" skipped="0" time="0" hostname="beast">
+      <testcase name="matches valid PAN ABCDE1234F" classname="PAN_PATTERN" time="0.000088" file="__tests__/patterns.test.ts" line="108" assertions="1" />
+      <testcase name="matches PAN at start of string" classname="PAN_PATTERN" time="0.000016" file="__tests__/patterns.test.ts" line="112" assertions="1" />
+      <testcase name="does NOT match 4-digit number segment (too short)" classname="PAN_PATTERN" time="0.000011" file="__tests__/patterns.test.ts" line="116" assertions="1" />
+      <testcase name="does NOT match lowercase letters" classname="PAN_PATTERN" time="0.000013" file="__tests__/patterns.test.ts" line="120" assertions="1" />
+      <testcase name="does NOT match 3-digit CIBIL score" classname="PAN_PATTERN" time="0.000015" file="__tests__/patterns.test.ts" line="124" assertions="1" />
+    </testsuite>
+    <testsuite name="AADHAAR_PATTERN" file="__tests__/patterns.test.ts" line="129" tests="5" assertions="5" failures="0" skipped="0" time="0" hostname="beast">
+      <testcase name="matches 12 digits with spaces &quot;4444 5555 6666&quot;" classname="AADHAAR_PATTERN" time="0.000047" file="__tests__/patterns.test.ts" line="130" assertions="1" />
+      <testcase name="matches 12 digits without spaces &quot;111122223333&quot;" classname="AADHAAR_PATTERN" time="0.000014" file="__tests__/patterns.test.ts" line="134" assertions="1" />
+      <testcase name="matches mixed spacing &quot;1111 22223333&quot;" classname="AADHAAR_PATTERN" time="0.000016" file="__tests__/patterns.test.ts" line="138" assertions="1" />
+      <testcase name="does NOT match 10-digit mobile number" classname="AADHAAR_PATTERN" time="0.000011" file="__tests__/patterns.test.ts" line="143" assertions="1" />
+      <testcase name="does NOT match 3-digit CIBIL score" classname="AADHAAR_PATTERN" time="0.000012" file="__tests__/patterns.test.ts" line="148" assertions="1" />
+    </testsuite>
+    <testsuite name="MOBILE_PATTERN" file="__tests__/patterns.test.ts" line="153" tests="9" assertions="9" failures="0" skipped="0" time="0" hostname="beast">
+      <testcase name="matches 10-digit mobile starting with 9" classname="MOBILE_PATTERN" time="0.000216" file="__tests__/patterns.test.ts" line="154" assertions="1" />
+      <testcase name="matches mobile starting with 6" classname="MOBILE_PATTERN" time="0.00002" file="__tests__/patterns.test.ts" line="158" assertions="1" />
+      <testcase name="matches mobile starting with 7" classname="MOBILE_PATTERN" time="0.000014" file="__tests__/patterns.test.ts" line="162" assertions="1" />
+      <testcase name="matches mobile starting with 8" classname="MOBILE_PATTERN" time="0.000012" file="__tests__/patterns.test.ts" line="166" assertions="1" />
+      <testcase name="does NOT match number starting with 5 (invalid Indian mobile)" classname="MOBILE_PATTERN" time="0.000014" file="__tests__/patterns.test.ts" line="170" assertions="1" />
+      <testcase name="does NOT match number starting with 1" classname="MOBILE_PATTERN" time="0.000016" file="__tests__/patterns.test.ts" line="174" assertions="1" />
+      <testcase name="does NOT redact 3-digit CIBIL score 750" classname="MOBILE_PATTERN" time="0.000014" file="__tests__/patterns.test.ts" line="178" assertions="1" />
+      <testcase name="does NOT redact 3-digit score 850" classname="MOBILE_PATTERN" time="0.000011" file="__tests__/patterns.test.ts" line="183" assertions="1" />
+      <testcase name="does NOT match 9-digit number (too short)" classname="MOBILE_PATTERN" time="0.000013" file="__tests__/patterns.test.ts" line="187" assertions="1" />
+    </testsuite>
+    <testsuite name="STEP_IDS" file="__tests__/patterns.test.ts" line="192" tests="7" assertions="28" failures="0" skipped="0" time="0" hostname="beast">
+      <testcase name="has all 11 step IDs defined" classname="STEP_IDS" time="0.000062" file="__tests__/patterns.test.ts" line="193" assertions="1" />
+      <testcase name="DECODE is &quot;decode&quot;" classname="STEP_IDS" time="0.000015" file="__tests__/patterns.test.ts" line="197" assertions="1" />
+      <testcase name="PRE_GUARDRAIL is &quot;pre-guardrail&quot;" classname="STEP_IDS" time="0.000011" file="__tests__/patterns.test.ts" line="201" assertions="1" />
+      <testcase name="POST_GUARDRAIL is &quot;post-guardrail&quot;" classname="STEP_IDS" time="0.000016" file="__tests__/patterns.test.ts" line="205" assertions="1" />
+      <testcase name="COMPOSE is &quot;compose&quot;" classname="STEP_IDS" time="0.000015" file="__tests__/patterns.test.ts" line="209" assertions="1" />
+      <testcase name="UNDERSTAND is &quot;understand&quot;" classname="STEP_IDS" time="0.00001" file="__tests__/patterns.test.ts" line="213" assertions="1" />
+      <testcase name="all IDs are non-empty strings" classname="STEP_IDS" time="0.000096" file="__tests__/patterns.test.ts" line="217" assertions="22" />
+    </testsuite>
+    <testsuite name="INTENT_VALUES" file="__tests__/patterns.test.ts" line="225" tests="6" assertions="6" failures="0" skipped="0" time="0" hostname="beast">
+      <testcase name="contains all 5 intent values" classname="INTENT_VALUES" time="0.000014" file="__tests__/patterns.test.ts" line="226" assertions="1" />
+      <testcase name="includes bureau_query" classname="INTENT_VALUES" time="0.000015" file="__tests__/patterns.test.ts" line="230" assertions="1" />
+      <testcase name="includes score_improvement" classname="INTENT_VALUES" time="0.000011" file="__tests__/patterns.test.ts" line="234" assertions="1" />
+      <testcase name="includes credit_card" classname="INTENT_VALUES" time="0.00001" file="__tests__/patterns.test.ts" line="238" assertions="1" />
+      <testcase name="includes insurance" classname="INTENT_VALUES" time="0.000012" file="__tests__/patterns.test.ts" line="242" assertions="1" />
+      <testcase name="includes general" classname="INTENT_VALUES" time="0.00001" file="__tests__/patterns.test.ts" line="246" assertions="1" />
+    </testsuite>
+  </testsuite>
+  <testsuite name="__tests__/tools.test.ts" file="__tests__/tools.test.ts" tests="8" assertions="9" failures="0" skipped="0" time="0" hostname="beast">
+    <testsuite name="calculateEmi" file="__tests__/tools.test.ts" line="11" tests="3" assertions="4" failures="0" skipped="0" time="0.01" hostname="beast">
+      <testcase name="P=100000, r=12%, n=12 → ~8884" classname="calculateEmi" time="0.010907" file="__tests__/tools.test.ts" line="12" assertions="2" />
+      <testcase name="result prefixed with &quot;EMI: &quot; and digit-only value" classname="calculateEmi" time="0.000146" file="__tests__/tools.test.ts" line="19" assertions="1" />
+      <testcase name="higher rate → higher EMI" classname="calculateEmi" time="0.000112" file="__tests__/tools.test.ts" line="24" assertions="1" />
+    </testsuite>
+    <testsuite name="calculateFoir" file="__tests__/tools.test.ts" line="33" tests="5" assertions="5" failures="0" skipped="0" time="0" hostname="beast">
+      <testcase name="5000 obligations, 20000 income → FOIR: 25.0%" classname="calculateFoir" time="0.00049" file="__tests__/tools.test.ts" line="34" assertions="1" />
+      <testcase name="income 0 → error string, does not throw" classname="calculateFoir" time="0.00009" file="__tests__/tools.test.ts" line="39" assertions="1" />
+      <testcase name="income negative → error string, does not throw" classname="calculateFoir" time="0.000044" file="__tests__/tools.test.ts" line="44" assertions="1" />
+      <testcase name="result contains % sign" classname="calculateFoir" time="0.00004" file="__tests__/tools.test.ts" line="49" assertions="1" />
+      <testcase name="0 obligations → FOIR: 0.0%" classname="calculateFoir" time="0.000033" file="__tests__/tools.test.ts" line="54" assertions="1" />
+    </testsuite>
+  </testsuite>
+</testsuites>

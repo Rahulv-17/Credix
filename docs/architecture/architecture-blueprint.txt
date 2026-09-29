@@ -1,0 +1,455 @@
+================================================================================
+ARCHITECTURE BLUEPRINT — CREDIT CREDIX
+================================================================================
+Format follows the architecture-blueprint-generator skill: a C4-style top-down
+walkthrough (Context → Containers → Components → Code), followed by tech stack,
+data, deployment, cross-cutting concerns, invariants, and the current scope.
+
+Last updated: Phase 1 (Raw Data Layer) build window.
+
+
+================================================================================
+1. SYSTEM PURPOSE
+================================================================================
+
+Credit Credix is an AI credit-coaching product for the Indian retail credit
+market. It is a conversational credix (persona: "Rahul" — witty,
+blunt-but-warm, light Hinglish) that helps users across three advisory domains:
+
+  - Credit card recommendation
+  - Credit score improvement
+  - Insurance planning
+
+Target user: Gen Z India, often thin-file or with low reported income, where
+*declared income documentation* is typically a bigger eligibility lever than
+*credit score improvement*. The product is opinionated about this and roasts
+behaviors (never income).
+
+The system is grounded: every number Rahul ever says must be traceable to a
+specific tool output. Memory is bounded and PII-stripped. Routing is
+deterministic (free per turn); the only LLM cost per turn is inside specialists.
+
+
+================================================================================
+2. CONTEXT (LEVEL 1)
+================================================================================
+
+Actors
+------
+  - End user                       — chats with Rahul (WhatsApp / web / app)
+  - Operations / analyst           — inspects audit trail + golden transcripts
+  - Snowflake (upstream)           — source of truth for bureau data
+  - Bureau (Experian via SCRUB)    — provides the 320-variable monthly snapshot
+
+External systems
+----------------
+  - Grok                           — primary LLM provider
+  - Snowflake                      — bureau source of truth (320 SCRUB vars)
+  - WhatsApp Business / mobile app — delivery surface
+  - (Optional) TTS service         — for voice surface
+
+Boundary
+--------
+  Credit Credix is a self-contained service. It pulls bureau data on demand
+  from Snowflake (with Redis + Mongo caching in front), persists personalization
+  state in Postgres, and never writes back to the bureau source.
+
+
+================================================================================
+3. CONTAINERS (LEVEL 2)
+================================================================================
+
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │                          credit-credix                            │
+  │                                                                      │
+  │   ┌─────────────────┐         ┌──────────────────────────────┐       │
+  │   │  api (FastAPI)  │ ──────► │      graph runtime           │       │
+  │   │  /v1/chat       │         │  (LangGraph, in-process)     │       │
+  │   └─────────────────┘         └──────────────────────────────┘       │
+  │           │                              │                           │
+  │           │                              │ reads/writes              │
+  │           │                              ▼                           │
+  │           │                  ┌──────────────────────┐                │
+  │           │                  │  raw_data assembler  │ ◄── PHASE 1    │
+  │           │                  └──────────────────────┘                │
+  │           │                              │                           │
+  │           │           ┌──────────────────┼──────────────────┐        │
+  │           │           ▼                  ▼                  ▼        │
+  │           │     ┌──────────┐      ┌─────────────┐      ┌────────┐    │
+  │           │     │ bureau   │      │ user_data + │      │ pre-   │    │
+  │           │     │ resolver │      │ user_memory │      │computed│    │
+  │           │     └──────────┘      └─────────────┘      └────────┘    │
+  │           │                                                          │
+  │           │                                                          │
+  │   ┌────────────────────┐                                             │
+  │   │ background worker  │ ◄── memory writer (off hot path)            │
+  │   └────────────────────┘                                             │
+  └──────────────────────────────────────────────────────────────────────┘
+                              │           │           │
+                              ▼           ▼           ▼
+                         ┌────────┐ ┌──────────┐ ┌─────────┐
+                         │ Redis  │ │ Postgres │ │ MongoDB │
+                         │ (L1)   │ │ (memory) │ │ (audit) │
+                         └────────┘ └──────────┘ └─────────┘
+                                                       │
+                                                       ▼
+                                                 ┌────────────┐
+                                                 │ Snowflake  │
+                                                 │ (L3 truth) │
+                                                 └────────────┘
+
+
+Containers (each is a deploy unit or stateful store)
+
+  api                 FastAPI service. Stateless. Holds the LangGraph runtime
+                      in-process. Single endpoint of value: POST /v1/chat.
+
+  worker              Background Python worker. Consumes the memory write
+                      queue. Regenerates prose summaries. Refreshes
+                      precomputed values. NOT on the request hot path.
+
+  Redis               L1 cache. Holds cc:profile:{token} PII-stripped JSON,
+                      the LangGraph checkpointer, and rate-limit counters.
+
+  Postgres            Personalization store. JSONB sections for prose_summary,
+                      hard_constraints, goals_table, and raw transcripts.
+                      Source of truth for memory.
+
+  MongoDB             L2 cache + audit. Immutable bureau snapshots keyed by
+                      {token}:{scrub_month}. Holds the full SCRUB document
+                      for replay and regeneration.
+
+  Snowflake           L3 source of truth. Bureau data. 320 SCRUB variables.
+                      Never written to by this service.
+
+  Grok                External LLM. Called from inside specialist subgraphs
+                      and the synthesizer. Never from the router.
+
+
+================================================================================
+4. COMPONENTS (LEVEL 3) — TURN-1 GRAPH
+================================================================================
+
+Components mirror the Turn-1 diagram exactly. Each is a LangGraph node or a
+data-plane module the nodes call. The flow per turn:
+
+  Start
+   │
+   ▼
+  identity_check ──► decode ──► understand ──► raw_data.assembler
+                                                      │
+                                                      ▼
+                                              pre_guardrail
+                                                      │
+                                                      ▼
+                                              user_story (build session+phase view)
+                                                      │
+                                                      ▼
+                                              skill_resolver (route_skill, pure code)
+                                                      │
+                                                      ▼
+                                              specialist subgraph
+                                                (bounded reason→tool loop;
+                                                 Phase 3 tools/ when ready)
+                                                      │
+                                                      ▼
+                                              post_guardrail (numeric trace, PII)
+                                                      │
+                                                      ├──► memory_writeback (async)
+                                                      ▼
+                                              compose (Rahul synthesizer + WA/TTS)
+                                                      │
+                                                      ▼
+                                                     End
+
+Component contracts (selected; full per-edge contract in data-flow-turn1.txt)
+
+  identity_check
+    in   : user_id (or mobile), session_id
+    out  : token = sha256("91"+mobile)[:32], identity_block
+
+  decode
+    in   : raw_message (text | voice base64 | doc bytes)
+    out  : normalized_text, language, surface_intent
+
+  understand
+    in   : normalized_text, surface_intent
+    out  : intent_label, slots_detected
+
+  raw_data.assembler  (this is the PHASE 1 deliverable)
+    in   : token, requested_sections[]
+    out  : agent_payload (PII-stripped JSON, one document)
+           {
+             identity_block (sanitized),
+             bureau_sections (only those requested),
+             user_declared,
+             user_memory: { prose_summary, hard_constraints, goals },
+             precomputed
+           }
+
+  pre_guardrail
+    in   : normalized_text, agent_payload
+    out  : pass/block + redaction map (PAN, Aadhaar, mobile, DOB, address)
+
+  user_story
+    in   : agent_payload, recent_turns
+    out  : story_view = { session, profile, phase, episodic+semantic+behavioral }
+
+  skill_resolver  (route_skill — DETERMINISTIC, NO LLM)
+    in   : intent_label, story_view, active_specialist (sticky)
+    out  : next_specialist ∈ { credit_card, score_improvement, insurance }
+
+  specialist subgraph
+    in   : story_view, agent_payload (partial), tools_handle
+    out  : draft_response (with numeric trace tags)
+    inv  : bounded loop; every number tagged with source tool call
+
+  post_guardrail
+    in   : draft_response
+    out  : safe_response, numeric_trace_report, pii_rescrub_report
+
+  memory_writeback
+    in   : turn_record (user_msg, response, tool_calls)
+    out  : enqueued (async); writer reconciles prose_summary in background
+
+  compose
+    in   : safe_response, surface (WA | TTS | web)
+    out  : rendered_response (persona applied here, once)
+
+
+================================================================================
+5. RAW DATA LAYER (PHASE 1) — COMPONENT ZOOM
+================================================================================
+
+The Raw Data Layer is the box on the right of the diagram. It has five logical
+sources and one assembler that fuses them into the agent payload.
+
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                       raw_data.assembler                            │
+  │                                                                     │
+  │   ┌───────────────────┐                                             │
+  │   │ Bureau Data       │ ── resolver: Redis → Mongo → Snowflake      │
+  │   │ (320 SCRUB vars)  │    tokenizer + normalizer + partial reads   │
+  │   └───────────────────┘                                             │
+  │                                                                     │
+  │   ┌───────────────────┐                                             │
+  │   │ User Data         │ ── declared values (income, employer, ...)  │
+  │   │ (declared)        │    Postgres JSONB                           │
+  │   └───────────────────┘                                             │
+  │                                                                     │
+  │   ┌───────────────────┐                                             │
+  │   │ User Memory       │ ── prose_summary (primary)                  │
+  │   │ (epi/sem/behav)   │    hard_constraints (block)                 │
+  │   │                   │    goals_table (optional, numeric)          │
+  │   │                   │    transcripts (fallback for regeneration)  │
+  │   └───────────────────┘                                             │
+  │                                                                     │
+  │   ┌───────────────────┐                                             │
+  │   │ Pre-Computed      │ ── eligibility projections                  │
+  │   │ Values            │    derived metrics (utilization, vintage,   │
+  │   │                   │    loan-mix ratios, repayment rates)        │
+  │   └───────────────────┘                                             │
+  │                                                                     │
+  │   ┌───────────────────┐                                             │
+  │   │ User Declared     │ ── values explicitly stated this session    │
+  │   │ Values            │    (slot-fill from FlowState)               │
+  │   └───────────────────┘                                             │
+  │                                                                     │
+  │              ▼                                                      │
+  │      one PII-stripped JSON  ──► cc:profile:{token} in Redis         │
+  └─────────────────────────────────────────────────────────────────────┘
+
+Key invariants (Phase 1):
+
+  I1  Financial truth never duplicates. The 320 SCRUB variables live in
+      Snowflake. Mongo holds an immutable snapshot per (token, scrub_month).
+      Redis holds a derived, PII-stripped projection. No new copy is
+      authoritative.
+
+  I2  PII never crosses the agent boundary. The Redis projection has PAN,
+      Aadhaar, mobile, full address, and DOB stripped or hashed. The agent
+      payload is built from this projection, not from raw Mongo/Snowflake.
+
+  I3  Resolver is read-through, not write-through. A cache miss promotes
+      Snowflake → Mongo (audit) → Redis (serve). Writes never originate
+      from the agent.
+
+  4   Normalizer is declarative. Field-by-field mapping lives in
+      config/scrub_mapping.yaml, validated by Pydantic models. No code
+      changes for field additions; YAML + schema bump.
+
+  I5  Partial reads. The agent fetches only the sections relevant to the
+      current intent via JSONPath selectors. Default deny on full-document
+      pulls in production.
+
+
+================================================================================
+6. CONTROL FLOW — ROUTING AND STATE
+================================================================================
+
+Routing is pure code. The router receives intent_label and the sticky
+active_specialist from CredixState; it returns the next specialist by table
+lookup. This is the architectural decision that makes per-turn cost predictable:
+
+  - No LLM call on the routing edge.
+  - Sticky routing preserves domain focus across multi-turn dialogues.
+  - Loss of context is impossible by construction — there is one
+    checkpointed CredixState shared across all specialists.
+
+Specialists are compiled subgraphs with a bounded internal reason→tool loop.
+Each one has:
+
+  - A scoped prompt (lives in docs/prompts/specialists/).
+  - A tool allowlist (Phase 3 tools/ registry).
+  - A step budget.
+  - A draft_response output, never a final user-facing message — the single
+    render node owns final composition so persona and guardrails apply once.
+
+Multi-turn guided flows (e.g. insurance slot-filling) use FlowState stored
+inside CredixState, NOT LangGraph's interrupt(). This preserves the
+invariant that every turn flows through guardrails and a single render node.
+
+
+================================================================================
+7. TECH STACK
+================================================================================
+
+  Language              Python 3.11+
+  Orchestration         LangGraph
+  LLM                   Grok (primary)
+  HTTP                  FastAPI + Uvicorn
+  Validation            Pydantic v2
+  Personalization DB    Postgres (JSONB), Alembic migrations
+  Cache                 Redis (serving cache + checkpointer)
+  Audit / L2            MongoDB (immutable bureau snapshots)
+  Bureau truth (L3)     Snowflake
+  Queue                 Redis Streams (memory writer)
+  Config                Pydantic Settings, YAML (scrub_mapping, policy_rules)
+  Observability         OpenTelemetry, structured JSON logs
+  Tests                 pytest, golden transcript regression
+
+
+================================================================================
+8. DATA MODEL (KEY ARTIFACTS)
+================================================================================
+
+  TOKEN                 sha256("91" + mobile)[:32]
+                        Stable, deterministic, derivable, non-reversible.
+
+  BUREAU AUDIT KEY      MongoDB _id = "{token}:{scrub_month}"
+                        e.g. "ab12...ef:Feb-2026"
+                        Immutable snapshot of the full normalized SCRUB doc.
+
+  AGENT CACHE KEY       Redis "cc:profile:{token}"
+                        PII-stripped JSON. TTL with background refresh.
+
+  POSTGRES SECTIONS     memory.prose_summary       — text + version
+                        memory.hard_constraints    — JSONB block
+                        memory.goals_table         — optional numeric rows
+                        memory.transcripts         — raw fallback
+                        user.declared_values       — JSONB
+
+  CHECKPOINT            LangGraph checkpoint per (user, session). Stored in
+                        Redis with Postgres fallback for durability.
+
+
+================================================================================
+9. DEPLOYMENT VIEW
+================================================================================
+
+  api (Deployment, 2..N replicas, HPA on CPU + RPS)
+       ↑
+       │  ingress / WAF
+       ▼
+  worker (Deployment, 1..2 replicas)
+       ↑
+       │  Redis Streams consumer
+       ▼
+  redis     (StatefulSet, 1 primary + replicas)
+  postgres  (managed RDS / Cloud SQL)
+  mongo     (managed Atlas / DocumentDB)
+  snowflake (external, network-allowlisted)
+
+Scaling axes
+  - api scales with concurrent chat sessions.
+  - worker is rate-limited by Snowflake pull cost and prose-summary regen.
+  - Redis is the hot cache; sized for working set of active users * 1.5.
+
+
+================================================================================
+10. CROSS-CUTTING CONCERNS
+================================================================================
+
+Security
+  - PII strip at the cache boundary, not at the agent boundary.
+  - Tokens (not mobiles) flow through the agent context.
+  - PAN, Aadhaar, DOB, full address never appear in prompts.
+  - Hard-constraints memory block governs what topics Rahul will discuss.
+
+Observability
+  - OTEL spans: identity_check → ... → compose (one trace per turn).
+  - Tool-call ledger: every tool invocation logged with inputs, outputs,
+    duration, and which numbers it produced. Numeric-trace check reads this.
+  - Cache-hit metrics at L1 / L2 separately.
+
+Reliability
+  - L3 (Snowflake) is allowed to be slow; the resolver short-circuits at L1
+    in the common case. Cold-path budget is enforced via timeout.
+  - Background writer is idempotent. A failed regenerate retries with
+    the same input; identical output is expected.
+
+Cost
+  - Routing is free per turn.
+  - Specialist reasoning is the unit of LLM cost; step budgets cap it.
+  - Memory writes are off the hot path and batched.
+
+
+================================================================================
+11. INVARIANTS (NEVER VIOLATE)
+================================================================================
+
+  INV-1  Every number in a user-facing response has a source tool output.
+  INV-2  Persona is applied exactly once, at the single render node.
+  INV-3  Pre-guardrail and post-guardrail bracket every specialist.
+  INV-4  Routing is deterministic; no LLM call on the routing edge.
+  INV-5  Memory writes do not block the user response.
+  INV-6  Financial truth lives in Snowflake; Postgres holds personalization.
+  INV-7  No raw PII enters the agent context; only tokens and stripped data.
+  INV-8  Multi-turn flows use FlowState, not LangGraph interrupt().
+  INV-9  No new copy of the SCRUB dictionary lives in the personalization
+         store. Bureau data is partial-read on demand.
+
+
+================================================================================
+12. CURRENT SCOPE (PHASE 1)
+================================================================================
+
+In flight, this phase:
+
+  - raw_data/bureau/        — resolver, tokenizer, normalizer, partial reads
+  - raw_data/user_data/     — declared values store
+  - raw_data/user_memory/   — prose summary, hard constraints, transcripts
+  - raw_data/precomputed/   — derived metrics, eligibility projections
+  - raw_data/assembler.py   — the single payload contract
+  - config/scrub_mapping.yaml
+  - memory/postgres_store.py + memory/redis_cache.py (just enough for raw_data)
+
+Explicitly deferred:
+
+  - graph/ specialists                    — Phase 2
+  - guardrails/ implementations           — Phase 2
+  - persona/ synthesizer                  — Phase 2
+  - api/ surface                          — Phase 2 (a thin test endpoint
+                                            may exist for integration tests)
+  - tools/ (Credit Brain)                 — Phase 3, last
+
+Exit criteria for Phase 1:
+
+  - Given a mobile number, the system produces a PII-stripped agent payload
+    deterministically in <100ms warm cache, <1s cold path.
+  - All 320 SCRUB variables are addressable by JSONPath, with named section
+    selectors for PL, CC, TW, HL, DPD, ENQ, REPAYMENT, INSTITUTE.
+  - Prose summary can be written, read, and regenerated from transcripts.
+  - Hard constraints can be set, read, and enforced as a hard block.
+  - Golden test: Deepak's profile (NR2502266363341855) produces a payload
+    matching tests/golden/deepak_payload.json byte-for-byte.

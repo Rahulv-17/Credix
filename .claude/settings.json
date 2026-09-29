@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(echo $TOOL_INPUT_JSON | python3 -c \"import sys,json; d=json.load(sys.stdin); print(d.get('file_path',''))\" 2>/dev/null); if [[ \"$FILE\" == *.py ]]; then cd /home/beast/Documents/Rahul && uv run ruff format \"$FILE\" --quiet 2>/dev/null || true; fi"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '\\n--- Session end reminder ---\\n1. Update tasks/todo.md phase status\\n2. Add to tasks/progress.md\\n3. Review corrections → tasks/lessons.md\\n4. Run verify before committing\\n5. Add to Session/updates.md if something shipped' 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true
+  }
+}

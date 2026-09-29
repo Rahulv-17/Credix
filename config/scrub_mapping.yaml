@@ -1,0 +1,95 @@
+schema_version: 1
+products: [PL, HL, AL, GL, BL, CC, LAP, LAS, TW, Total]
+
+sections:
+  general_info:
+    type: scalar
+    fields:   # out_key: SF_col
+      score: Score
+      salary: Salary
+      foir: FOIR
+      dt: DT
+      dt_value: DT_value
+      avg_acc_age: Avg_acc_age
+      credit_history_length: Credit_history_length
+      existing_emi: Existing_EMI
+      user_id: User_id
+
+  pii:
+    type: scalar
+    secure: true            # routed out of the Redis agent cache
+    fields:
+      name: Applicant_name
+      dob: DOB
+      age: Age
+      gender: Gender
+      pan: PAN
+      email: Email
+      phones: [Phone_1, Phone_2, Phone_3, Phone_4, Phone_5]
+      address_1: [Address_1, Address_1_ZIP, Address_1_state, Address_1_rptdate]
+      address_2: [Address_2, Address_2_ZIP, Address_2_state, Address_2_rptdate]
+
+  loan_details:
+    type: product
+    metrics:   # out_key: SF_suffix
+      all: all
+      active: active
+      outstanding: outstanding
+      disbursed_all: disbursed_all
+      disbursed_active: disbursed_active
+      max: max
+      ats: ATS
+      recency: recency
+      latest_open_date: latest_open_date
+      latest_close_date: latest_close_date
+    extra:
+      CC: {utilization_pct: utilization_pct, max_creditlimit: max_creditlimit}
+
+  enquiries:
+    type: product
+    metrics:
+      enq: enq
+      enq_30d: enq_30d
+      enq_60d: enq_60d
+      enq_90d: enq_90d
+      amt_30d: enq_amt_30d
+      amt_60d: enq_amt_60d
+      amt_90d: enq_amt_90d
+
+  loan_repayments:
+    type: product
+    metrics:
+      repayment_rate: repayment_rate
+      highest_interest_rate: highest_interest_rate
+
+  loan_patterns:
+    type: product
+    metrics:
+      average_gap: average_gap
+
+  borrowing_window:
+    type: product
+    metrics:
+      m6:    [6mon]
+      m12:   [12mon]
+      m6_lt: [6mon_lt_1L, 6mon_lt_10k, 6mon_lt1L]
+      m12_lt: [12mon_lt_1L, 12mon_lt_10k, 12mon_lt1L]
+
+  institution_details:
+    type: institution
+    products: [PL, HL, AL, GL, BL, CC, LAP, LAS, TW, Mfbl, Other, Total]
+    suffix: institute
+
+  dpd:
+    type: dpd
+    buckets:   # out_key: [SF prefix aliases per month]  (quote numeric keys — YAML reads 30_60 as int 3060)
+      "lt30":    {prefix_aliases: ["<30DPD", "DPD_lt30"]}
+      "30_60":   {prefix_aliases: ["30-60DPD"]}
+      "60_90":   {prefix_aliases: ["60-90DPD"]}
+      "90_plus": {prefix_aliases: ["90+_DPD"]}
+    months: {m1: 1mon, m2: 2mon, m3: 3mon, m6: 6mon, m12: 12mon}
+    pl_fields:
+      highest_dpd: PL_highest_DPD
+      active_dpd30_3mon: PL_active_DPD30_3mon
+      active_dpd30_6mon: PL_active_DPD30_6mon
+      active_dpd30_12mon: PL_active_DPD30_12mon

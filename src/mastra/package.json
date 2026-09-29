@@ -1,0 +1,45 @@
+{
+  "name": "credix-mastra",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file-if-exists=../../.env --import tsx/esm --import ./tracing.ts server.ts",
+    "dev:untraced": "node --env-file-if-exists=../../.env --import tsx/esm server.ts",
+    "probe": "node --env-file-if-exists=../../.env --import tsx/esm --import ./tracing.ts scripts/probe-turn.ts",
+    "battery": "node --env-file-if-exists=../../.env --import tsx/esm --import ./tracing.ts scripts/battery.ts",
+    "tool-battery": "node --env-file-if-exists=../../.env --import tsx/esm --import ./tracing.ts scripts/tool-battery.ts",
+    "agent-tool-pass": "node --env-file-if-exists=../../.env --import tsx/esm --import ./tracing.ts scripts/agent-tool-pass.ts",
+    "mastra:dev": "mastra dev",
+    "build": "mastra build",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "3.0.74",
+    "@elevenlabs/elevenlabs-js": "^2.54.0",
+    "@hono/node-server": "^1.0.0",
+    "@hono/zod-validator": "^0.4.0",
+    "@mastra/core": "1.45.0",
+    "@mastra/langfuse": "^1.4.5",
+    "@mastra/libsql": "1.14.0",
+    "@mastra/memory": "1.21.0",
+    "@mastra/observability": "^1.16.2",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/auto-instrumentations-node": "^0.77.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.219.0",
+    "@opentelemetry/sdk-node": "^0.219.0",
+    "exa-js": "^2.16.0",
+    "hono": "^4.0.0",
+    "pg": "^8.22.0",
+    "undici": "^6.23.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.20.0",
+    "bun-types": "^1.3.14",
+    "mastra": "1.15.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}

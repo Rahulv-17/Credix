@@ -1,0 +1,613 @@
+================================================================================
+ATOMIC DECOMPOSITION — CREDIT CREDIX
+================================================================================
+Format follows the atomic-decomposition skill: break the system into the
+smallest single-responsibility units, each with an explicit contract
+(input, output, dependencies, errors, side effects). One unit = one file or
+one function. If a unit needs more than ~50 lines of description, it is not
+atomic and should be split.
+
+Phase 1 (raw_data) is decomposed exhaustively. Phase 2 and Phase 3 are
+sketched at coarser granularity — they will be decomposed when they enter
+their build window.
+
+
+================================================================================
+LEGEND
+================================================================================
+
+  Unit ID         stable identifier (e.g. RD.BUR.TKN)
+  Responsibility  one sentence; if you can't, it isn't atomic
+  Inputs          typed, with units
+  Outputs         typed, with units
+  Depends on      upstream units or external services
+  Errors          named failure modes with handling
+  Side effects    DB writes, cache writes, queue pushes
+  Owning module   file path relative to src/credit_credix/
+
+  Phases:  P1 = current  |  P2 = next  |  P3 = last (Credit Brain)
+
+
+================================================================================
+SECTION A — PHASE 1: RAW DATA LAYER (full atomic decomposition)
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+A.1  BUREAU SUB-LAYER
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         RD.BUR.TKN
+Responsibility  Convert a mobile number into the canonical 32-char token.
+Inputs          mobile: str (10-digit Indian mobile, no country code)
+Outputs         token: str  (sha256("91" + mobile)[:32], lowercase hex)
+Depends on      hashlib  (stdlib)
+Errors          - ValueError if mobile is not a 10-digit numeric string
+                  → raised; caller decides whether to map to a 4xx
+Side effects    none (pure function)
+Owning module   raw_data/bureau/tokenizer.py
+
+
+Unit ID         RD.BUR.RDS
+Responsibility  Read and write the PII-stripped serving projection at
+                Redis key "cc:profile:{token}".
+Inputs          - get(token): str
+                - set(token, projection: dict, ttl_s: int)
+                - delete(token)
+Outputs         - get → projection: dict | None
+                - set → None
+                - delete → bool (existed)
+Depends on      redis client, RD.BUR.TKN (for key formation only)
+Errors          - RedisConnectionError → bubble up; resolver decides L2 path
+                - SerializationError → raise; do not silently corrupt
+Side effects    cache writes
+Owning module   raw_data/bureau/redis_client.py
+
+
+Unit ID         RD.BUR.MGO
+Responsibility  Read and write immutable audit documents at
+                MongoDB _id = "{token}:{scrub_month}".
+Inputs          - get_latest(token): returns most recent by scrub_month
+                - get(token, scrub_month): exact match
+                - insert(doc): full normalized SCRUB document
+Outputs         - get_* → doc: dict | None
+                - insert → inserted_id: str
+Depends on      pymongo / motor
+Errors          - DuplicateKeyError on insert → treated as success
+                  (audit is idempotent by design)
+                - MongoConnectionError → bubble; resolver decides L3 path
+Side effects    audit writes (append-only)
+Owning module   raw_data/bureau/mongo_client.py
+
+
+Unit ID         RD.BUR.SNW
+Responsibility  Pull the raw bureau row for a token from Snowflake.
+Inputs          token: str, scrub_month: str | None (latest if None)
+Outputs         row: dict (raw SCRUB column names)  | None if not found
+Depends on      snowflake-connector-python, network policy
+Errors          - SnowflakeTimeout → raise, caller surfaces stale or 503
+                - NotFoundError → return None (do not raise)
+Side effects    none (read-only against Snowflake)
+Owning module   raw_data/bureau/snowflake_client.py
+
+
+Unit ID         RD.BUR.SCH
+Responsibility  Pydantic schema for the 320-field SCRUB document and the
+                named section slices (PL, CC, TW, HL, DPD, ENQ, REPAY, INST).
+Inputs          n/a (declarative)
+Outputs         ScrubDoc, BureauSections, IdentityBlock (Pydantic models)
+Depends on      Pydantic v2, scrub_dictionary.xlsx (as docs)
+Errors          ValidationError on .model_validate() — raised, caller logs
+                + falls back to None if used inside a tolerant path
+Side effects    none
+Owning module   raw_data/bureau/schemas/{scrub,sections,identity}.py
+
+
+Unit ID         RD.BUR.NRM
+Responsibility  Apply config/scrub_mapping.yaml to a raw Snowflake row to
+                produce a validated ScrubDoc.
+Inputs          raw_row: dict, mapping: dict (loaded YAML)
+Outputs         scrub_doc: ScrubDoc
+Depends on      RD.BUR.SCH, pyyaml
+Errors          - MappingMissingFieldError → log + null the field, do not
+                  fail the whole document (bureau columns can be sparse)
+                - ValidationError → propagate; ingest pipeline halts
+Side effects    none
+Owning module   raw_data/bureau/normalizer.py
+
+
+Unit ID         RD.BUR.PRJ
+Responsibility  Build the PII-stripped serving projection from a ScrubDoc.
+                Strips PAN, Aadhaar, mobile, full address, DOB. Hashes
+                what must remain joinable. Keeps section structure.
+Inputs          scrub_doc: ScrubDoc
+Outputs         projection: dict  (the shape that becomes cc:profile:{token})
+Depends on      RD.BUR.SCH
+Errors          none expected; defensive on missing sections
+Side effects    none
+Owning module   raw_data/bureau/resolver.py  (private helper)
+
+
+Unit ID         RD.BUR.RES
+Responsibility  Read-through resolver. Returns the serving projection for
+                a token by traversing L1 (Redis) → L2 (Mongo) → L3 (Snowflake),
+                promoting on miss.
+Inputs          token: str, scrub_month: str | None = None
+Outputs         projection: dict
+Depends on      RD.BUR.RDS, RD.BUR.MGO, RD.BUR.SNW, RD.BUR.NRM, RD.BUR.PRJ
+Errors          - UpstreamUnavailableError if all three tiers fail
+                - StaleProfileWarning logged (not raised) if L1 served while
+                  L2/L3 are unreachable
+Side effects    cache + audit writes on cold path
+Owning module   raw_data/bureau/resolver.py
+
+
+Unit ID         RD.BUR.PRD
+Responsibility  Resolve named JSONPath selectors against the projection
+                and return only the requested sections.
+Inputs          projection: dict, sections: list[str]
+                e.g. sections = ["identity", "PL", "DPD", "ENQ"]
+Outputs         partial: dict (subset)
+Depends on      RD.BUR.RES (consumers call this, not RES directly)
+Errors          - UnknownSectionError if selector is not in the allowlist
+Side effects    none
+Owning module   raw_data/bureau/partial_reads.py
+
+
+────────────────────────────────────────────────────────────────────────────────
+A.2  USER DATA SUB-LAYER
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         RD.USR.SCH
+Responsibility  Pydantic schema for user-declared values (income, employer,
+                employment_type, goals, declared_emis, declared_obligations).
+Inputs          n/a
+Outputs         DeclaredValues (Pydantic model)
+Depends on      Pydantic v2
+Errors          ValidationError on write
+Side effects    none
+Owning module   raw_data/user_data/schemas.py
+
+
+Unit ID         RD.USR.STO
+Responsibility  Read/write declared values in Postgres JSONB at
+                table user.declared_values keyed by token.
+Inputs          - get(token) → DeclaredValues | None
+                - upsert(token, values: DeclaredValues)
+Outputs         see above
+Depends on      psycopg / asyncpg, RD.USR.SCH
+Errors          - PostgresError → bubble
+Side effects    writes
+Owning module   raw_data/user_data/store.py
+
+
+────────────────────────────────────────────────────────────────────────────────
+A.3  USER MEMORY SUB-LAYER
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         RD.MEM.PRO
+Responsibility  Read and write the prose summary. The summary is a lightly
+                sectioned plain-text document (sections like "context",
+                "financial-snapshot", "tone-and-tells", "recent-decisions").
+                Versioned; latest wins; old versions retained for audit.
+Inputs          - get(token) → ProseSummary | None
+                - put(token, text: str, version: int, author: str)
+Outputs         ProseSummary { text, version, written_at, author }
+Depends on      Postgres JSONB, RD.MEM.SCH
+Errors          - ConflictError on version skew → caller resolves
+Side effects    writes
+Owning module   raw_data/user_memory/prose_summary.py
+
+
+Unit ID         RD.MEM.HRD
+Responsibility  Read and write the hard-constraints block (small JSONB
+                with: roast_consent: bool, sensitive_topics: list[str],
+                address_as: str, opt_outs: list[str]).
+Inputs          - get(token) → HardConstraints
+                - set(token, constraints: HardConstraints)
+Outputs         HardConstraints (Pydantic model)
+Depends on      Postgres JSONB, RD.MEM.SCH
+Errors          ValidationError on write
+Side effects    writes
+Owning module   raw_data/user_memory/hard_constraints.py
+
+
+Unit ID         RD.MEM.GOL
+Responsibility  Optional numeric accountability table. Each row is a goal
+                with target, current, deadline, last_checked_at.
+Inputs          - list(token) → list[Goal]
+                - upsert(token, goal: Goal)
+                - mark_progress(token, goal_id, current: float)
+Outputs         Goal (Pydantic), list[Goal]
+Depends on      Postgres relational table (not JSONB; queryable)
+Errors          - UnknownGoalError on mark_progress
+Side effects    writes
+Owning module   raw_data/user_memory/goals_table.py
+
+
+Unit ID         RD.MEM.TRN
+Responsibility  Append-only store of raw turns (user_msg, response,
+                tool_calls). Used as the fallback for prose-summary
+                regeneration.
+Inputs          - append(token, turn: Turn)
+                - read(token, since: datetime | None) → list[Turn]
+Outputs         Turn { ts, user_msg, response, tool_calls, specialist }
+Depends on      Postgres, RD.MEM.SCH
+Errors          PostgresError
+Side effects    writes
+Owning module   raw_data/user_memory/transcripts.py
+
+
+Unit ID         RD.MEM.BGW
+Responsibility  Background writer interface. Enqueues a turn-record for
+                async processing. The actual write happens in the worker
+                (workers/memory_writer.py); this unit only enqueues.
+Inputs          enqueue(token, turn: Turn, hints: WriterHints | None)
+Outputs         job_id: str
+Depends on      Redis Streams (queue)
+Errors          QueueFullError → fail open and skip (memory writes are
+                advisory, not mandatory for correctness)
+Side effects    queue push only
+Owning module   raw_data/user_memory/background_writer.py
+
+
+Unit ID         RD.MEM.SCH
+Responsibility  Pydantic schemas for ProseSummary, HardConstraints, Goal,
+                Turn, WriterHints.
+Inputs          n/a
+Outputs         model classes
+Depends on      Pydantic v2
+Errors          ValidationError
+Side effects    none
+Owning module   raw_data/user_memory/schemas.py
+
+
+────────────────────────────────────────────────────────────────────────────────
+A.4  PRE-COMPUTED VALUES SUB-LAYER
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         RD.PRE.DRV
+Responsibility  Compute derived metrics from a ScrubDoc: utilization %,
+                vintage in months, loan-mix ratios, repayment rates,
+                enquiry density (30/60/90 windows).
+Inputs          scrub_doc: ScrubDoc
+Outputs         DerivedMetrics (Pydantic)
+Depends on      RD.BUR.SCH
+Errors          DivisionByZeroSafeguarded (returns None for the metric)
+Side effects    none
+Owning module   raw_data/precomputed/derived_metrics.py
+
+
+Unit ID         RD.PRE.ELG
+Responsibility  Compute cached eligibility projections (FOIR headroom,
+                rough loan ceiling under current declared income).
+                NOT a decision; just a number with a clear formula.
+Inputs          scrub_doc: ScrubDoc, declared: DeclaredValues | None
+Outputs         EligibilityProjection { foir, foir_headroom,
+                rough_ceiling, assumptions: list[str] }
+Depends on      RD.BUR.SCH, RD.USR.SCH
+Errors          MissingInputError → returns partial with assumptions noted
+Side effects    none
+Owning module   raw_data/precomputed/eligibility.py
+
+
+Unit ID         RD.PRE.RFR
+Responsibility  Refresh precomputed values for a token. Idempotent.
+                Called by the worker on bureau ingest or on demand.
+Inputs          token: str
+Outputs         updated: bool
+Depends on      RD.BUR.RES, RD.USR.STO, RD.PRE.DRV, RD.PRE.ELG, Postgres
+Errors          UpstreamUnavailableError → log, skip; not fatal
+Side effects    writes derived metrics + eligibility into Postgres
+Owning module   raw_data/precomputed/refresh.py
+
+
+────────────────────────────────────────────────────────────────────────────────
+A.5  ASSEMBLER (the one Phase-1 deliverable that everything else consumes)
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         RD.ASM
+Responsibility  Build the single PII-stripped agent payload for a turn,
+                fusing bureau partial-read, declared values, user memory,
+                and precomputed values into one document.
+Inputs          token: str, requested_sections: list[str], intent_hint: str
+Outputs         agent_payload: dict, shaped as:
+                {
+                  "identity_block": {...sanitized},
+                  "bureau":         {... requested sections only},
+                  "declared":       {... or null},
+                  "memory": {
+                    "prose":            "...",
+                    "hard_constraints": {...},
+                    "goals":            [...]
+                  },
+                  "precomputed":    {...}
+                }
+Depends on      RD.BUR.RES, RD.BUR.PRD, RD.USR.STO, RD.MEM.PRO,
+                RD.MEM.HRD, RD.MEM.GOL, RD.PRE.DRV, RD.PRE.ELG
+Errors          - UpstreamUnavailableError on bureau resolve → caller surfaces
+                - PartialPayloadWarning logged if memory or declared is empty
+                  (allowed; new users have empty memory)
+Side effects    none (read-only against all sources)
+Owning module   raw_data/assembler.py
+
+
+────────────────────────────────────────────────────────────────────────────────
+PHASE 1 INVARIANT CHECKS  (golden-test these)
+────────────────────────────────────────────────────────────────────────────────
+
+  IC-1  RD.BUR.TKN(6363341855)[:8] is stable across runs.
+        Test fixture: tests/golden/tokens.json.
+
+  IC-2  RD.ASM never returns a document containing PAN, Aadhaar, mobile,
+        or DOB. Lint the JSON with the PII detector after assembly.
+
+  IC-3  RD.BUR.RES warm-path latency ≤ 50ms (Redis only). Cold path
+        ≤ 1000ms (Snowflake). Measured in integration tests.
+
+  IC-4  Deepak's fixture profile (NR2502266363341855, Feb-2026)
+        produces a byte-identical RD.ASM output to
+        tests/golden/deepak_payload.json across runs.
+
+  IC-5  Removing scrub_mapping.yaml or breaking it fails normalizer
+        Pydantic validation, not a silent corruption.
+
+  IC-6  RD.PRE.RFR is idempotent: running it twice on the same token
+        with no upstream changes yields no row diff in Postgres.
+
+
+================================================================================
+SECTION B — PHASE 2: GRAPH, GUARDRAILS, MEMORY INFRA, PERSONA, API
+================================================================================
+(Sketched here; each unit will be decomposed atomically in its build window.)
+
+────────────────────────────────────────────────────────────────────────────────
+B.1  GRAPH STATE & ROUTING
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         GR.STA
+Responsibility  CredixState dataclass + FlowState struct.
+                Carries: token, session_id, surface, language, recent_turns,
+                story_view, active_specialist, flow_state (per-specialist),
+                pending_tool_results, draft_response, numeric_trace.
+Owning module   graph/state.py
+
+Unit ID         GR.RTR
+Responsibility  route_skill(intent_label, active_specialist) → next_specialist.
+                Pure function. Table-driven. No LLM.
+Owning module   graph/router.py
+
+
+────────────────────────────────────────────────────────────────────────────────
+B.2  TURN-1 NODES  (each is one atomic unit)
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         GR.ND.ICK   identity_check
+                in:  user_id | mobile, session_id
+                out: token, identity_block (sanitized)
+                deps: RD.BUR.TKN
+
+Unit ID         GR.ND.DEC   decode
+                in:  raw_message (text | voice | doc)
+                out: normalized_text, language, surface_intent
+                deps: STT provider (if voice), simple format detector
+
+Unit ID         GR.ND.UND   understand
+                in:  normalized_text, surface_intent
+                out: intent_label, slots_detected
+                deps: Grok (small classification prompt)
+
+Unit ID         GR.ND.PRE   pre_guardrail
+                in:  normalized_text, agent_payload
+                out: pass/block + redaction map
+                deps: GR.GR.PII, GR.GR.INJ, GR.GR.SCO
+
+Unit ID         GR.ND.STO   user_story
+                in:  agent_payload, recent_turns
+                out: story_view
+                deps: none beyond state
+
+Unit ID         GR.ND.SKR   skill_resolver
+                in:  intent_label, story_view, active_specialist
+                out: next_specialist
+                deps: GR.RTR
+
+Unit ID         GR.ND.SPC   specialist (dispatched)
+                in:  story_view, agent_payload subset, tools_handle
+                out: draft_response (with numeric_trace tags)
+                deps: GR.SP.* (per-domain subgraphs)
+
+Unit ID         GR.ND.PST   post_guardrail
+                in:  draft_response
+                out: safe_response, traces
+                deps: GR.GR.NUM, GR.GR.PII, GR.GR.CON
+
+Unit ID         GR.ND.MEM   memory_writeback (async fire-and-forget)
+                in:  turn_record
+                out: job_id
+                deps: RD.MEM.BGW
+
+Unit ID         GR.ND.CMP   compose
+                in:  safe_response, surface
+                out: rendered_response
+                deps: PS.SYN, surface formatter (WA / TTS / web)
+
+
+────────────────────────────────────────────────────────────────────────────────
+B.3  SPECIALIST SUBGRAPHS  (one per domain)
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         GR.SP.BAS    _base reason→tool loop scaffold
+Unit ID         GR.SP.CC     credit_card specialist
+Unit ID         GR.SP.SI     score_improvement specialist
+Unit ID         GR.SP.IN     insurance specialist (uses FlowState for slot-fill)
+
+
+────────────────────────────────────────────────────────────────────────────────
+B.4  GUARDRAILS
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         GR.GR.PII   pii_scrubber          (PAN | Aadhaar | mobile | DOB | addr)
+Unit ID         GR.GR.INJ   injection_filter      (prompt-injection patterns)
+Unit ID         GR.GR.SCO   scope_filter          (off-topic / non-credit)
+Unit ID         GR.GR.NUM   numeric_traceability  (every number → tool source)
+Unit ID         GR.GR.CON   content_policy        (roast policy, sensitive topics)
+
+
+────────────────────────────────────────────────────────────────────────────────
+B.5  MEMORY INFRA
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         MM.PG       postgres_store     (JSONB sections, transactions)
+Unit ID         MM.RD       redis_cache        (cc:profile:{token}, checkpointer)
+Unit ID         MM.CP       checkpoint adapter (LangGraph ↔ Redis/PG)
+
+
+────────────────────────────────────────────────────────────────────────────────
+B.6  PERSONA
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         PS.SYN      synthesizer        (applies Rahul voice once)
+Unit ID         PS.STY      style_guide        (Hinglish toggles, roast policy)
+Unit ID         PS.CFG      rahul.py           (voice config object)
+
+
+────────────────────────────────────────────────────────────────────────────────
+B.7  API SURFACE
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         AP.APP      FastAPI factory
+Unit ID         AP.CHT      POST /v1/chat
+Unit ID         AP.HLT      GET  /healthz
+Unit ID         AP.ADM      Admin endpoints (memory inspect, cache flush)
+
+
+────────────────────────────────────────────────────────────────────────────────
+B.8  WORKERS
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         WK.MEM      memory_writer       (consumes write queue)
+Unit ID         WK.PRE      precompute_refresher (refreshes RD.PRE.* on ingest)
+
+
+================================================================================
+SECTION C — PHASE 3: TOOL CALL MODULE / CREDIT BRAIN (last)
+================================================================================
+(Coarse sketch; will be decomposed atomically when Phase 1 and 2 are stable.)
+
+────────────────────────────────────────────────────────────────────────────────
+C.1  DETERMINISTIC ENGINE  (Code | Calculation)
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         TL.DE.EMI    emi(principal, rate, tenure) → schedule + total
+Unit ID         TL.DE.INT    interest computations (simple, compound, effective)
+Unit ID         TL.DE.FOIR   foir(income, obligations) → ratio
+Unit ID         TL.DE.DBR    dbr(income, total_debt) → ratio
+Unit ID         TL.DE.REF    refinance(current, alternative) → savings
+
+
+────────────────────────────────────────────────────────────────────────────────
+C.2  POLICY & RULES KB  (Curated | Deterministic)
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         TL.PR.LDR    loader     (reads config/policy_rules/*.yaml)
+Unit ID         TL.PR.CAP    caps       (FOIR / DBR / lender cutoffs)
+Unit ID         TL.PR.TRC    trace      (every rule → stable rule_id)
+
+
+────────────────────────────────────────────────────────────────────────────────
+C.3  DECISION TREES  (Branching | Traceable)
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         TL.DT.CAR    card_eligibility tree
+Unit ID         TL.DT.SCO    score_improvement tree
+
+
+────────────────────────────────────────────────────────────────────────────────
+C.4  PREDICTION MODELS  (Probabilistic | Policy-gated)
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         TL.PM.APR    approval_likelihood
+Unit ID         TL.PM.GAT    policy_gate (predictions never exposed unguarded)
+
+
+────────────────────────────────────────────────────────────────────────────────
+C.5  PRODUCT CATALOG  (Products → Recommendation)
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         TL.PC.SCH    search
+Unit ID         TL.PC.RNK    ranker
+
+
+────────────────────────────────────────────────────────────────────────────────
+C.6  INTENT RESOLVER
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         TL.IR.CLS    classifier (model + rule fallback)
+
+
+────────────────────────────────────────────────────────────────────────────────
+C.7  TOOL REGISTRY
+────────────────────────────────────────────────────────────────────────────────
+
+Unit ID         TL.REG       registry (tool ↔ spec ↔ specialist allowlist)
+
+
+================================================================================
+DEPENDENCY GRAPH (Phase 1 only, the part being built now)
+================================================================================
+
+  RD.BUR.TKN ──┐
+               ├──► RD.BUR.RDS ──┐
+               │                  │
+               ├──► RD.BUR.MGO ──┤
+               │                  ├──► RD.BUR.RES ──┐
+               ├──► RD.BUR.SNW ──┘                  │
+               │                                    │
+               └──► RD.BUR.SCH ◄── RD.BUR.NRM ──────┤
+                                                    ├──► RD.BUR.PRD ──┐
+                                                    │                  │
+                                                    └──► RD.BUR.PRJ    │
+                                                                       │
+  RD.USR.SCH ──► RD.USR.STO ───────────────────────────────────────────┤
+                                                                       │
+  RD.MEM.SCH ──┬──► RD.MEM.PRO ────────────────────────────────────────┤
+               ├──► RD.MEM.HRD ────────────────────────────────────────┤
+               ├──► RD.MEM.GOL ────────────────────────────────────────┤
+               ├──► RD.MEM.TRN ────────────────────────────────────────┤
+               └──► RD.MEM.BGW (writes only; not consumed by assembler)│
+                                                                       │
+  RD.BUR.SCH ──► RD.PRE.DRV ─────────────────────────────────────────  ┤
+  RD.BUR.SCH ──► RD.PRE.ELG ────────────────────────────────────────── ┤
+              ──► RD.PRE.RFR (background; writes outputs of DRV/ELG)   │
+                                                                       ▼
+                                                                  RD.ASM
+                                                                       │
+                                                                       ▼
+                                                       (consumed by GR.ND.STO in Phase 2)
+
+
+================================================================================
+BUILD ORDER WITHIN PHASE 1
+================================================================================
+
+  1.  RD.BUR.TKN                     (1 day; pure function + golden test)
+  2.  RD.BUR.SCH                     (2 days; pydantic over 320 fields)
+  3.  RD.BUR.SNW                     (1 day; smoke test on Deepak)
+  4.  RD.BUR.NRM + scrub_mapping.yaml(3 days; declarative mapping)
+  5.  RD.BUR.MGO                     (1 day; audit writes)
+  6.  RD.BUR.RDS + RD.BUR.PRJ        (2 days; projection + cache)
+  7.  RD.BUR.RES                     (2 days; tiered read-through)
+  8.  RD.BUR.PRD                     (1 day; JSONPath sections)
+  9.  RD.USR.SCH + RD.USR.STO        (1 day)
+  10. RD.MEM.SCH + RD.MEM.HRD        (1 day; constraints first)
+  11. RD.MEM.PRO                     (2 days; prose template + getter/setter)
+  12. RD.MEM.TRN + RD.MEM.GOL        (1 day)
+  13. RD.MEM.BGW (interface only)    (½ day; worker comes in P2)
+  14. RD.PRE.DRV                     (1 day)
+  15. RD.PRE.ELG                     (1 day)
+  16. RD.PRE.RFR                     (1 day)
+  17. RD.ASM                         (2 days; end-to-end test against golden)
+
+  Total order-of-magnitude: ~3 weeks for a single engineer with the
+  schemas pinned. Worker (WK.PRE, WK.MEM) builds in early Phase 2 and
+  immediately starts consuming RD.MEM.BGW + RD.PRE.RFR.

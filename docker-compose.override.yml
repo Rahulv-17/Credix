@@ -1,0 +1,4 @@
+# Dev-only overrides. PHASE 2 — placeholder.
+# Phase 1 needs only the `redis` service from docker-compose.yml (redis-stack
+# with RedisJSON). Local Postgres / Mongo land here when Phase 2 begins.
+services: {}

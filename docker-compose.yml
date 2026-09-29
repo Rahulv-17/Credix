@@ -1,0 +1,18 @@
+# Pogocache is the only containerized dependency. MongoDB is Atlas (see
+# MONGODB_URI in the global staging/.env). Pogocache is a plain RESP cache
+# (SET/GET/EXPIRE), no module needed. The cache is disposable: it runs
+# in-memory (no --persist) because Mongo (L2) is the durable source of truth,
+# so an eviction just triggers a refill. CacheRepo speaks plain RESP, so this
+# can be swapped back to redis/valkey by changing REDIS_URL alone.
+services:
+  pogocache:
+    image: docker.io/pogocache/pogocache:latest
+    container_name: cc-pogocache
+    # `network_mode: host` binds Pogocache on 127.0.0.1:9401. NOTE: host networking
+    # works on Linux (and podman) only; it is NOT supported on Docker Desktop for
+    # macOS/Windows. On those, comment this line out and use the `ports` mapping below.
+    network_mode: host
+    # ports:
+    #   - "127.0.0.1:9401:9401"   # cross-platform alternative to network_mode: host
+    command: ["--maxmemory", "75%", "--evict", "yes"]
+    restart: unless-stopped
