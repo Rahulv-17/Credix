@@ -184,7 +184,7 @@ sequenceDiagram
     C->>H: { mobile, message, session_id?, channel }
     H->>BS: GET /internal/bureau/{id}  (fetchBureau, once)
     H->>BS: GET /internal/user-story/{id}  (fetchUserStory, optional signals)
-    Note over H: invalid mobile to 400; bureau not_found to friendly 200; sidecar error to 502
+    Note over H: invalid mobile to 400, bureau not_found to friendly 200, sidecar error to 502
     H->>WF: run.start(initData: user_id, message, channel, bureau_profile, signals)
 
     WF->>WF: decode (NFC, lang detect, STT if audio)
