@@ -1,4 +1,4 @@
-# Credit Credix
+#  Credix
 
 Project workflow and agent conventions are in [SETUP.md](SETUP.md); read it before starting work.
 
