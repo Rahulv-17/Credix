@@ -101,7 +101,7 @@ src/
     server.ts                  Hono: POST /v1/chat, POST /v1/statement, GET /health
     index.ts                   Mastra instance: storage + agents + workflow
     workflows/
-      credix-workflow.ts    The ordered pipeline (decode to compose) + branch routing
+      credix-workflow.ts       The ordered pipeline (decode to compose) + branch routing
     steps/
       decode.ts                NFC normalize, script-based lang detect, ElevenLabs STT
       pre-guardrail.ts         Injection + unsafe filters, deny-by-default PII mask
@@ -112,7 +112,7 @@ src/
       identity-check.ts        Standalone bureau-record check (NOT in the live chain)
       user-story.ts            Stub (TODO); real signals path is lib + tools/signals
     agents/
-      credix.ts             Rahul root agent (general + bureau queries)
+      credix.ts                Rahul root agent (general + bureau queries)
       credit-card.ts           Credit-card specialist (+ 6 Cred catalog tools)
       score-improvement.ts     CIBIL coaching specialist
       insurance.ts             Insurance specialist (Phase-3 stub)
