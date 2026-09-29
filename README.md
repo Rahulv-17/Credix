@@ -98,64 +98,64 @@ The active FRIDAY v1 runtime is the TypeScript Mastra layer plus a narrow Python
 ```
 src/
   mastra/                      TypeScript orchestration (Hono + Mastra)
-    server.ts                  Hono: POST /v1/chat, POST /v1/statement, GET /health
-    index.ts                   Mastra instance: storage + agents + workflow
+    server.ts                      Hono: POST /v1/chat, POST /v1/statement, GET /health
+    index.ts                       Mastra instance: storage + agents + workflow
     workflows/
-      credix-workflow.ts       The ordered pipeline (decode to compose) + branch routing
+      credix-workflow.ts           The ordered pipeline (decode to compose) + branch routing
     steps/
-      decode.ts                NFC normalize, script-based lang detect, ElevenLabs STT
-      pre-guardrail.ts         Injection + unsafe filters, deny-by-default PII mask
-      understand.ts            LLM intent classifier + concurrent web grounding
-      post-guardrail.ts        Aadhaar/PAN/mobile scrub of the reply
-      memory-writeback.ts      Trigger observational memory (fail-soft)
-      compose.ts               WhatsApp / web / TTS channel formatter
-      identity-check.ts        Standalone bureau-record check (NOT in the live chain)
-      user-story.ts            Stub (TODO); real signals path is lib + tools/signals
+      decode.ts                    NFC normalize, script-based lang detect, ElevenLabs STT
+      pre-guardrail.ts             Injection + unsafe filters, deny-by-default PII mask
+      understand.ts                LLM intent classifier + concurrent web grounding
+      post-guardrail.ts            Aadhaar/PAN/mobile scrub of the reply
+      memory-writeback.ts          Trigger observational memory (fail-soft)
+      compose.ts                   WhatsApp / web / TTS channel formatter
+      identity-check.ts            Standalone bureau-record check (NOT in the live chain)
+      user-story.ts                Stub (TODO); real signals path is lib + tools/signals
     agents/
-      credix.ts                Rahul root agent (general + bureau queries)
-      credit-card.ts           Credit-card specialist (+ 6 Cred catalog tools)
-      score-improvement.ts     CIBIL coaching specialist
-      insurance.ts             Insurance specialist (Phase-3 stub)
-      persona.ts               RAHUL_PERSONA (shared instruction string)
+      credix.ts                    Rahul root agent (general + bureau queries)
+      credit-card.ts               Credit-card specialist (+ 6 Cred catalog tools)
+      score-improvement.ts         CIBIL coaching specialist
+      insurance.ts                 Insurance specialist (Phase-3 stub)
+      persona.ts                   RAHUL_PERSONA (shared instruction string)
     tools/
-      bureau.ts                getBureauDetail (one section), getBureauProfile (unattached)
-      signals.ts               getSignals (precomputed bureau signals, push + pull)
-      calculators.ts           calculateEmi, calculateFoir (defined, currently unattached)
-      eligibility.ts           checkCardEligibility (pure decision tree)
-      statement.ts             getStatement (uploaded, chunked statement reader)
-      exa.ts                   exaSearch (web grounding via Exa)
-      card-catalog.ts          6 Cred catalog read tools
-    memory/index.ts            credixMemory: working memory + observational memory
-    lib/                       provider (Grok), patterns, retry, storage, otel, fetchers,
-                               catalog-db + catalog-cards, signal-summary, statement-store
-    tracing.ts                 OpenTelemetry SDK bootstrap (loaded before app code)
-    __tests__/                 26 test/QA files (unit, mocked, and live-gated)
+      bureau.ts                    getBureauDetail (one section), getBureauProfile (unattached)
+      signals.ts                   getSignals (precomputed bureau signals, push + pull)
+      calculators.ts               calculateEmi, calculateFoir (defined, currently unattached)
+      eligibility.ts               checkCardEligibility (pure decision tree)
+      statement.ts                 getStatement (uploaded, chunked statement reader)
+      exa.ts                       exaSearch (web grounding via Exa)
+      card-catalog.ts              6 Cred catalog read tools
+    memory/index.ts                credixMemory: working memory + observational memory
+    lib/                           provider (Grok), patterns, retry, storage, otel, fetchers,
+                                   catalog-db + catalog-cards, signal-summary, statement-store
+    tracing.ts                     OpenTelemetry SDK bootstrap (loaded before app code)
+    __tests__/                     26 test/QA files (unit, mocked, and live-gated)
 
-  nodes/                       Python data sidecar (FastAPI)
+  nodes/                           Python data sidecar (FastAPI)
     api/
-      app.py                   create_app: mounts ONLY the bureau_internal router
-      routes/bureau_internal.py  GET /internal/bureau/{id}[/{section}], /internal/user-story/{id}
+      app.py                       create_app: mounts ONLY the bureau_internal router
+      routes/bureau_internal.py    GET /internal/bureau/{id}[/{section}], /internal/user-story/{id}
     raw_data/bureau/
-      resolver.py              L1 to L2 to L3 read-through, Redis per-user build lock
-      factory.py               Process-global resolver singleton (wires all clients)
-      cache_client.py          L1 CacheRepo: plain-RESP key/value (one JSON string per key)
-      mongo_client.py          L2 MongoRepo: durable docs keyed {user_id}:{scrub_month}
-      snowflake_client.py      L3 fetch_scrub_row: OBJECT_CONSTRUCT join (lazy connect)
-      normalizer.py            Flat Snowflake row to categorized doc (scrub_mapping.yaml)
-      tokenizer.py             mobile_to_user_id (bare 10-digit canonical key)
-      pii.py                   strip_secure (drops config-flagged secure sections)
-      partial_reads.py         VALID_SECTIONS + select_section
-      client.py                Async facade get_bureau_profile / get_bureau_section
+      resolver.py                  L1 to L2 to L3 read-through, Redis per-user build lock
+      factory.py                   Process-global resolver singleton (wires all clients)
+      cache_client.py              L1 CacheRepo: plain-RESP key/value (one JSON string per key)
+      mongo_client.py              L2 MongoRepo: durable docs keyed {user_id}:{scrub_month}
+      snowflake_client.py          L3 fetch_scrub_row: OBJECT_CONSTRUCT join (lazy connect)
+      normalizer.py                Flat Snowflake row to categorized doc (scrub_mapping.yaml)
+      tokenizer.py                 mobile_to_user_id (bare 10-digit canonical key)
+      pii.py                       strip_secure (drops config-flagged secure sections)
+      partial_reads.py             VALID_SECTIONS + select_section
+      client.py                    Async facade get_bureau_profile / get_bureau_section
     raw_data/user_story/
-      engine.py                Bureau signal engine (62 Tier-1 + 34 Tier-2 + compose)
-      signals.py               compute_signals (structural + run_engine); SIGNALS_VERSION
-      store.py                 UserStoryStore.materialize / get (L1 + L2)
+      engine.py                    Bureau signal engine (62 Tier-1 + 34 Tier-2 + compose)
+      signals.py                   compute_signals (structural + run_engine); SIGNALS_VERSION
+      store.py                     UserStoryStore.materialize / get (L1 + L2)
 
-config/                        settings.py (load_env), scrub_mapping.yaml (normalizer map)
-tests/                         Python unit (10 files) + integration (2 files)
-interface/                     Next.js 16 app (assistant-ui chat + voice)
-docs/                          Architecture, ADRs, personas, integration plans
-tasks/                         todo.md, progress.md, lessons.md, findings.md
+config/                            settings.py (load_env), scrub_mapping.yaml (normalizer map)
+tests/                             Python unit (10 files) + integration (2 files)
+interface/                         Next.js 16 app (assistant-ui chat + voice)
+docs/                              Architecture, ADRs, personas, integration plans
+tasks/                             todo.md, progress.md, lessons.md, findings.md
 ```
 
 Note: `src/nodes/` also contains a larger earlier scaffold (`graph/`, `guardrails/`, `llm/`,
